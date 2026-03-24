@@ -1,0 +1,8 @@
+{"type":"human","content":"ボタンの角丸はどれくらいがいい？"}
+{"type":"assistant","content":"Resitoly全体で border-radius: 8px に統一することを推奨します。CTAボタンのみ 12px にすると視認性が上がります。"}
+{"type":"human","content":"Zustandの導入を検討しています"}
+{"type":"tool_use","name":"Read","content":"...ファイル内容..."}
+{"type":"tool_result","content":"...結果..."}
+{"type":"assistant","content":"Zustand v5 を推奨します。軽量でTypeScript型安全性が高く、Resitoly の規模に適しています。"}
+{"type":"human","content":"こんにちは"}
+{"type":"assistant","content":"こんにちは！何かお手伝いできることはありますか？"}
