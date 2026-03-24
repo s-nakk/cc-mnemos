@@ -73,7 +73,6 @@ class TestImportHistory:
 
         with (
             patch("cc_mnemos.batch_import.Path.home") as mock_home,
-            patch("cc_mnemos.batch_import.infer_project_name", return_value="TestApp"),
         ):
             mock_home.return_value = fake_home
             result = import_history(config, embedder=mock_embedder, verbose=False)
@@ -157,7 +156,6 @@ class TestImportHistory:
 
         with (
             patch("cc_mnemos.batch_import.Path.home") as mock_home,
-            patch("cc_mnemos.batch_import.infer_project_name", return_value="TestApp"),
         ):
             mock_home.return_value = fake_home
             import_history(config, embedder=mock_embedder, verbose=True)

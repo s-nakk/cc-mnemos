@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import time
@@ -11,13 +12,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cc_mnemos.chunker import chunk_transcript
-from cc_mnemos.embedder import Embedder
-from cc_mnemos.project import infer_project_name
 from cc_mnemos.store import MemoryStore
 from cc_mnemos.tagger import assign_tags
 
 if TYPE_CHECKING:
     from cc_mnemos.config import Config
+    from cc_mnemos.embedder import Embedder
 
 logger = logging.getLogger(__name__)
 
@@ -25,28 +25,25 @@ logger = logging.getLogger(__name__)
 def _resolve_cwd(project_dir_name: str) -> str:
     """プロジェクトディレクトリ名からcwdを復元
 
-    Claude Code の ``~/.claude/projects/`` 配下のディレクトリ名は
-    cwd のパスをエンコードしたものになっている:
-    - ``--`` → ``/``  (ドライブ区切り)
-    - ``-`` → ``/``  (パス区切り)
-    - 先頭文字がドライブレターの場合は大文字化して ``:`` を付与
-
-    例:
-    - ``c--projects-Morfee`` → ``C:/projects/Morfee``
-    - ``C--projects-Resitoly`` → ``C:/projects/Resitoly``
-
     Args:
         project_dir_name: プロジェクトディレクトリ名
 
     Returns:
         復元されたcwdパス文字列
     """
-    # ``--`` をまず区切り、各セグメント内の ``-`` を ``/`` に変換
     cwd = project_dir_name.replace("--", "/").replace("-", "/")
-    # ドライブレター補正: 先頭が「X/」の形式ならドライブパスとして扱う
     if len(cwd) >= 2 and cwd[1] == "/":
         cwd = cwd[0].upper() + ":" + cwd[1:]
     return cwd
+
+
+def _infer_project(cwd: str) -> str:
+    """cwdパスからプロジェクト名を推定（subprocess不使用）"""
+    parts = [p for p in cwd.replace("\\", "/").split("/") if p]
+    for i, part in enumerate(parts):
+        if part.lower() == "projects" and i + 1 < len(parts):
+            return parts[i + 1]
+    return parts[-1] if parts else "unknown"
 
 
 def import_history(
@@ -55,11 +52,6 @@ def import_history(
     verbose: bool = True,
 ) -> dict[str, int]:
     """既存のClaude Codeセッション履歴を一括インポート
-
-    ``~/.claude/projects/`` 配下の全JONLファイルを走査し、
-    未インポートのセッションをDBに取り込む。
-    Embedder を1回だけ生成して全セッションで使い回すことで
-    モデルロードのオーバーヘッドを削減する
 
     Args:
         config: アプリケーション設定
@@ -77,15 +69,11 @@ def import_history(
 
     store = MemoryStore(config)
 
-    # 既存セッションID取得
     existing = set(
         row[0]
-        for row in store.conn.execute(
-            "SELECT session_id FROM sessions"
-        ).fetchall()
+        for row in store.conn.execute("SELECT session_id FROM sessions").fetchall()
     )
 
-    # JSONL収集 (subagents/ ディレクトリは除外)
     all_files: list[Path] = []
     for jsonl in projects_dir.rglob("*.jsonl"):
         if "subagents" in jsonl.parts:
@@ -101,14 +89,12 @@ def import_history(
         return {"imported": 0, "skipped": len(existing), "errors": 0}
 
     if verbose:
-        print(
-            f"Importing {len(all_files)} sessions "
-            f"(skipping {len(existing)} already imported)..."
-        )
+        print(f"Importing {len(all_files)} sessions (skipping {len(existing)} already imported)...")
 
     # Embedderを1回だけロード
     if embedder is None:
-        embedder = Embedder(config)
+        from cc_mnemos.embedder import Embedder as EmbedderClass
+        embedder = EmbedderClass(config)
 
     imported = 0
     errors = 0
@@ -120,15 +106,11 @@ def import_history(
             project_dir_name = rel.parts[0]
             cwd = _resolve_cwd(project_dir_name)
 
-            chunks = chunk_transcript(
-                jsonl,
-                config.max_chunk_tokens,
-                config.min_chunk_tokens,
-            )
+            chunks = chunk_transcript(jsonl, config.max_chunk_tokens, config.min_chunk_tokens)
             if not chunks:
                 continue
 
-            project = infer_project_name(cwd, config)
+            project = _infer_project(cwd)
             now_str = datetime.now(tz=timezone.utc).isoformat()
 
             store.insert_session(
@@ -140,9 +122,7 @@ def import_history(
             )
 
             # バッチエンコード
-            embeddings = embedder.encode_documents(
-                [c.content for c in chunks]
-            )
+            embeddings = embedder.encode_documents([c.content for c in chunks])
 
             for idx, chunk in enumerate(chunks):
                 tags = assign_tags(chunk.content, config.tag_rules)
@@ -158,11 +138,17 @@ def import_history(
                 }
                 store.insert_chunk(chunk_data, embeddings[idx])
 
+            # Embeddingテンソルを明示的に解放
+            del embeddings
             imported += 1
         except Exception:
             errors += 1
             if verbose and errors <= 5:
                 logger.exception("  ERROR %s", jsonl.name[:30])
+
+        # 50セッションごとにGC実行してメモリ解放
+        if (i + 1) % 50 == 0:
+            gc.collect()
 
         if verbose:
             elapsed = time.time() - start
@@ -182,11 +168,11 @@ def import_history(
     store.close()
     elapsed = time.time() - start
 
+    # 最終GC
+    gc.collect()
+
     if verbose:
-        print()  # プログレスバーの改行
-        print(
-            f"Done: {imported} sessions imported, "
-            f"{errors} errors ({elapsed:.0f}s)"
-        )
+        print()
+        print(f"Done: {imported} sessions imported, {errors} errors ({elapsed:.0f}s)")
 
     return {"imported": imported, "skipped": len(existing), "errors": errors}
