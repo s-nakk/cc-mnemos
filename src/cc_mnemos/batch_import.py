@@ -164,24 +164,28 @@ def import_history(
             if verbose and errors <= 5:
                 logger.exception("  ERROR %s", jsonl.name[:30])
 
-        if verbose and (i + 1) % 50 == 0:
+        if verbose:
             elapsed = time.time() - start
             rate = (i + 1) / elapsed if elapsed > 0 else 0
-            remaining = (
-                (len(all_files) - i - 1) / rate if rate > 0 else 0
-            )
+            remaining = (len(all_files) - i - 1) / rate if rate > 0 else 0
+            bar_width = 30
+            progress = (i + 1) / len(all_files)
+            filled = int(bar_width * progress)
+            bar = "█" * filled + "░" * (bar_width - filled)
             print(
-                f"  [{i + 1}/{len(all_files)}] "
-                f"{imported} imported, {errors} errors "
-                f"({elapsed:.0f}s, ~{remaining:.0f}s remaining)"
+                f"\r  {bar} {i + 1}/{len(all_files)} "
+                f"({imported} saved, {errors} err) "
+                f"~{remaining:.0f}s left",
+                end="", flush=True,
             )
 
     store.close()
     elapsed = time.time() - start
 
     if verbose:
+        print()  # プログレスバーの改行
         print(
-            f"\nDone: {imported} sessions imported, "
+            f"Done: {imported} sessions imported, "
             f"{errors} errors ({elapsed:.0f}s)"
         )
 

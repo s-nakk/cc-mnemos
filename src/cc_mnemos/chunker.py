@@ -100,17 +100,20 @@ def chunk_transcript(
             if text:
                 user_buffer = text
         elif msg_type == "assistant" and user_buffer:
-            if text:
-                assistant_text = _truncate_tokens(text, max_tokens)
-                content = f"{user_buffer}\n{assistant_text}"
-                total_tokens = len(content.split())
-                if total_tokens >= min_tokens:
-                    chunks.append(
-                        Chunk(
-                            role_user=user_buffer,
-                            role_assistant=assistant_text,
-                            content=content,
-                        ),
-                    )
+            # テキストが空の場合はスキップ（thinking-onlyパーツ等）
+            # user_bufferは保持し、次のassistantメッセージでペアにする
+            if not text:
+                continue
+            assistant_text = _truncate_tokens(text, max_tokens)
+            content = f"{user_buffer}\n{assistant_text}"
+            total_tokens = len(content.split())
+            if total_tokens >= min_tokens:
+                chunks.append(
+                    Chunk(
+                        role_user=user_buffer,
+                        role_assistant=assistant_text,
+                        content=content,
+                    ),
+                )
             user_buffer = ""
     return chunks
