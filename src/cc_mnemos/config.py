@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 try:
@@ -26,118 +26,78 @@ class TagRule:
 
 
 # ---------------------------------------------------------------------------
-# デフォルトタグルール (日英バイリンガル)
+# デフォルトタグルール (日英バイリンガル — 正規表現パターン)
 # ---------------------------------------------------------------------------
 DEFAULT_TAG_RULES: dict[str, TagRule] = {
     "ui-ux": TagRule(
         keywords=[
-            "UI",
-            "UX",
-            "デザイン",
-            "design",
-            "レイアウト",
-            "layout",
-            "コンポーネント",
-            "component",
-            "スタイル",
-            "style",
-            "CSS",
-            "Tailwind",
-            "アクセシビリティ",
-            "accessibility",
+            r"デザイン|design",
+            r"レイアウト|layout",
+            r"カラー|色[味彩]|color",
+            r"フォント|font",
+            r"マージン|パディング|margin|padding",
+            r"UI|UX|アクセシビリティ|accessibility",
+            r"ボタン|モーダル|ナビ|サイドバー|カード",
+            r"見た目|見栄え|余白|角丸|border-radius",
         ],
         threshold=2,
-        prototype="UIデザインやUXに関するメモリ",
+        prototype="UI design layout color font spacing component appearance",
     ),
     "coding-style": TagRule(
         keywords=[
-            "命名",
-            "naming",
-            "フォーマット",
-            "format",
-            "lint",
-            "ruff",
-            "prettier",
-            "コーディング規約",
-            "coding standard",
-            "convention",
-            "インデント",
-            "indent",
+            r"命名規則|naming",
+            r"lint|eslint|prettier|ruff",
+            r"インデント|フォーマット|format",
+            r"コーディング規約|style\s*guide",
+            r"型定義|type[Ss]cript|type\s*hint",
         ],
-        threshold=2,
-        prototype="コーディングスタイルや規約に関するメモリ",
+        threshold=1,
+        prototype="coding style naming convention format lint type definition",
     ),
     "architecture": TagRule(
         keywords=[
-            "アーキテクチャ",
-            "architecture",
-            "設計",
-            "design pattern",
-            "モジュール",
-            "module",
-            "レイヤー",
-            "layer",
-            "依存",
-            "dependency",
-            "DI",
-            "クリーンアーキテクチャ",
-            "clean architecture",
+            r"設計|architect",
+            r"パターン|pattern",
+            r"DB|データベース|database|schema",
+            r"API設計|endpoint|REST|GraphQL",
+            r"状態管理|state\s*manage",
         ],
         threshold=2,
-        prototype="ソフトウェアアーキテクチャや設計に関するメモリ",
+        prototype="architecture design pattern database API state management",
     ),
     "debug": TagRule(
         keywords=[
-            "デバッグ",
-            "debug",
-            "バグ",
-            "bug",
-            "エラー",
-            "error",
-            "例外",
-            "exception",
-            "トラブルシュート",
-            "troubleshoot",
-            "ログ",
-            "log",
+            r"バグ|bug",
+            r"エラー|error|exception",
+            r"修正|fix",
+            r"デバッグ|debug",
+            r"スタックトレース|stack\s*trace|traceback",
         ],
-        threshold=2,
-        prototype="デバッグやトラブルシューティングに関するメモリ",
+        threshold=1,
+        prototype="bug fix error debug stack trace exception",
     ),
     "config": TagRule(
         keywords=[
-            "設定",
-            "config",
-            "環境変数",
-            "env",
-            ".env",
-            "toml",
-            "yaml",
-            "json",
-            "設定ファイル",
-            "configuration",
+            r"環境変数|env",
+            r"設定|config|settings",
+            r"package\.json|pyproject|Cargo\.toml",
+            r"ビルド|build|webpack|vite",
         ],
-        threshold=2,
-        prototype="設定や環境構築に関するメモリ",
+        threshold=1,
+        prototype="configuration environment variable build settings",
     ),
     "decision": TagRule(
         keywords=[
-            "決定",
-            "decision",
-            "採用",
-            "adopt",
-            "理由",
-            "reason",
-            "トレードオフ",
-            "trade-off",
-            "比較",
-            "compare",
-            "選定",
-            "選択",
-            "select",
+            r"採用し[たて]|chose|chosen|selected",
+            r"選[んび]|picked",
+            r"決め[たて]|decided",
+            r"やめ[たて]|abandoned|rejected",
+            r"不採用|比較し[たて]|compared",
+            r"理由[はとで]|because|reason",
+            r"トレードオフ|trade-?off",
         ],
         threshold=2,
-        prototype="技術的意思決定に関するメモリ",
+        prototype="technical decision comparison trade-off adoption reason",
     ),
 }
 
@@ -175,7 +135,7 @@ def get_config_path() -> Path:
 
     優先順位:
     1. 環境変数 CC_MNEMOS_CONFIG
-    2. Windows: %LOCALAPPDATA%/cc-mnemos/config.toml
+    2. Windows: %APPDATA%/cc-mnemos/config.toml
     3. Linux/macOS: $XDG_CONFIG_HOME/cc-mnemos/config.toml
        (デフォルト ~/.config/cc-mnemos/config.toml)
     """
@@ -184,10 +144,8 @@ def get_config_path() -> Path:
         return Path(env_override)
 
     if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA", "")
-        if base:
-            return Path(base) / "cc-mnemos" / "config.toml"
-        return Path.home() / "AppData" / "Local" / "cc-mnemos" / "config.toml"
+        base = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+        return Path(base) / "cc-mnemos" / "config.toml"
 
     # Linux / macOS — XDG 準拠
     xdg_config = os.environ.get("XDG_CONFIG_HOME", "")
@@ -199,9 +157,11 @@ def get_config_path() -> Path:
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-@dataclass
 class Config:
-    """アプリケーション全体の設定を保持するデータクラス
+    """アプリケーション全体の設定を保持するクラス
+
+    内部的に生の TOML セクション辞書 (_raw) を保持し、
+    @property 経由でデフォルト値付きアクセスを提供する
 
     生成方法:
     - ``Config()`` — すべてデフォルト値
@@ -210,36 +170,6 @@ class Config:
     - ``Config.load()`` — デフォルトパスから読み込み (ファイルが無ければデフォルト)
     """
 
-    # --- Embedding ---
-    embedding_model: str = "cl-nagoya/ruri-v3-310m"
-    embedding_dimension: int = 768
-
-    # --- Search ---
-    rrf_k: int = 60
-    time_decay_half_life_days: int = 30
-    default_search_limit: int = 10
-
-    # --- Chunking ---
-    max_chunk_tokens: int = 2000
-    min_chunk_tokens: int = 20
-
-    # --- Paths ---
-    _data_dir: Path | None = field(default=None, repr=False)
-    _db_path: Path | None = field(default=None, repr=False)
-
-    # --- Embedding (extended) ---
-    embedding_batch_size: int = 32
-
-    # --- Maintenance ---
-    max_chunk_age_days: int = 365
-    max_db_size_mb: int = 500
-    vacuum_interval_days: int = 30
-
-    # --- Misc ---
-    log_level: str = "INFO"
-    project_mapping: dict[str, str] = field(default_factory=dict)
-    tag_rules: dict[str, TagRule] = field(default_factory=lambda: dict(DEFAULT_TAG_RULES))
-
     def __init__(self, **raw_sections: dict[str, object]) -> None:
         """TOML セクション辞書からConfigを組み立てる
 
@@ -247,106 +177,120 @@ class Config:
             **raw_sections: ``embedding``, ``search``, ``chunking``,
                 ``general``, ``tags``, ``projects`` などのセクション辞書
         """
-        # デフォルト値で初期化
-        self.embedding_model = "cl-nagoya/ruri-v3-310m"
-        self.embedding_dimension = 768
-        self.rrf_k = 60
-        self.time_decay_half_life_days = 30
-        self.default_search_limit = 10
-        self.max_chunk_tokens = 2000
-        self.min_chunk_tokens = 20
-        self.embedding_batch_size = 32
-        self.max_chunk_age_days = 365
-        self.max_db_size_mb = 500
-        self.vacuum_interval_days = 30
-        self.log_level = "INFO"
-        self.project_mapping = {}
-        self.tag_rules = dict(DEFAULT_TAG_RULES)
-        self._data_dir = None
-        self._db_path = None
+        self._raw: dict[str, object] = dict(raw_sections)
 
-        # --- embedding セクション ---
-        embedding = raw_sections.get("embedding", {})
-        if isinstance(embedding, dict):
-            if "model" in embedding:
-                self.embedding_model = str(embedding["model"])
-            if "dimension" in embedding:
-                self.embedding_dimension = int(embedding["dimension"])  # type: ignore[arg-type]
-            if "batch_size" in embedding:
-                self.embedding_batch_size = int(embedding["batch_size"])  # type: ignore[arg-type]
-
-        # --- maintenance セクション ---
-        maintenance = raw_sections.get("maintenance", {})
-        if isinstance(maintenance, dict):
-            if "max_chunk_age_days" in maintenance:
-                self.max_chunk_age_days = int(maintenance["max_chunk_age_days"])  # type: ignore[arg-type]
-            if "max_db_size_mb" in maintenance:
-                self.max_db_size_mb = int(maintenance["max_db_size_mb"])  # type: ignore[arg-type]
-            if "vacuum_interval_days" in maintenance:
-                self.vacuum_interval_days = int(maintenance["vacuum_interval_days"])  # type: ignore[arg-type]
-
-        # --- search セクション ---
-        search = raw_sections.get("search", {})
-        if isinstance(search, dict):
-            if "rrf_k" in search:
-                self.rrf_k = int(search["rrf_k"])  # type: ignore[arg-type]
-            if "time_decay_half_life_days" in search:
-                self.time_decay_half_life_days = int(search["time_decay_half_life_days"])  # type: ignore[arg-type]
-            if "default_search_limit" in search:
-                self.default_search_limit = int(search["default_search_limit"])  # type: ignore[arg-type]
-
-        # --- chunking セクション ---
-        chunking = raw_sections.get("chunking", {})
-        if isinstance(chunking, dict):
-            if "max_chunk_tokens" in chunking:
-                self.max_chunk_tokens = int(chunking["max_chunk_tokens"])  # type: ignore[arg-type]
-            if "min_chunk_tokens" in chunking:
-                self.min_chunk_tokens = int(chunking["min_chunk_tokens"])  # type: ignore[arg-type]
-
-        # --- general セクション ---
-        general = raw_sections.get("general", {})
-        if isinstance(general, dict):
-            if "data_dir" in general:
-                self._data_dir = Path(str(general["data_dir"]))
-            if "db_path" in general:
-                self._db_path = Path(str(general["db_path"]))
-            if "log_level" in general:
-                self.log_level = str(general["log_level"])
-
-        # --- 環境変数オーバーライド ---
+        # 環境変数オーバーライド: data_dir
         env_data_dir = os.environ.get("CC_MNEMOS_DATA_DIR")
         if env_data_dir:
-            self._data_dir = Path(env_data_dir)
+            general = dict(self._raw.get("general", {}))  # type: ignore[arg-type]
+            general["data_dir"] = env_data_dir
+            self._raw["general"] = general
 
-        # --- tags セクション ---
-        tags = raw_sections.get("tags", {})
-        if isinstance(tags, dict):
-            for tag_name, tag_def in tags.items():
-                if isinstance(tag_def, dict):
-                    self.tag_rules[str(tag_name)] = TagRule(
-                        keywords=list(tag_def.get("keywords", [])),
-                        threshold=int(tag_def.get("threshold", 2)),  # type: ignore[arg-type]
-                        prototype=str(tag_def.get("prototype", "")),
-                    )
+    # --- Embedding ---
+    @property
+    def embedding_model(self) -> str:
+        """埋め込みモデル名を返す"""
+        return str(self._raw.get("embedding", {}).get("model", "cl-nagoya/ruri-v3-310m"))  # type: ignore[union-attr]
 
-        # --- projects セクション ---
-        projects = raw_sections.get("projects", {})
-        if isinstance(projects, dict):
-            self.project_mapping = {str(k): str(v) for k, v in projects.items()}
+    @property
+    def embedding_dimension(self) -> int:
+        """埋め込みベクトルの次元数を返す"""
+        return int(self._raw.get("embedding", {}).get("dimension", 768))  # type: ignore[union-attr]
 
+    @property
+    def embedding_batch_size(self) -> int:
+        """埋め込みバッチサイズを返す"""
+        return int(self._raw.get("embedding", {}).get("batch_size", 32))  # type: ignore[union-attr]
+
+    # --- Search ---
+    @property
+    def rrf_k(self) -> int:
+        """RRF の k パラメータを返す"""
+        return int(self._raw.get("search", {}).get("rrf_k", 60))  # type: ignore[union-attr]
+
+    @property
+    def time_decay_half_life_days(self) -> int:
+        """時間減衰の半減期(日)を返す"""
+        return int(self._raw.get("search", {}).get("time_decay_half_life_days", 30))  # type: ignore[union-attr]
+
+    @property
+    def default_search_limit(self) -> int:
+        """検索結果のデフォルト上限を返す"""
+        return int(self._raw.get("search", {}).get("default_search_limit", 10))  # type: ignore[union-attr]
+
+    # --- Chunking ---
+    @property
+    def max_chunk_tokens(self) -> int:
+        """チャンクの最大トークン数を返す"""
+        return int(self._raw.get("chunking", {}).get("max_chunk_tokens", 2000))  # type: ignore[union-attr]
+
+    @property
+    def min_chunk_tokens(self) -> int:
+        """チャンクの最小トークン数を返す"""
+        return int(self._raw.get("chunking", {}).get("min_chunk_tokens", 20))  # type: ignore[union-attr]
+
+    # --- Maintenance ---
+    @property
+    def max_chunk_age_days(self) -> int:
+        """チャンクの最大保持日数を返す"""
+        return int(self._raw.get("maintenance", {}).get("max_chunk_age_days", 365))  # type: ignore[union-attr]
+
+    @property
+    def max_db_size_mb(self) -> int:
+        """データベースの最大サイズ(MB)を返す"""
+        return int(self._raw.get("maintenance", {}).get("max_db_size_mb", 500))  # type: ignore[union-attr]
+
+    @property
+    def vacuum_interval_days(self) -> int:
+        """VACUUM の実行間隔(日)を返す"""
+        return int(self._raw.get("maintenance", {}).get("vacuum_interval_days", 30))  # type: ignore[union-attr]
+
+    # --- Misc ---
+    @property
+    def log_level(self) -> str:
+        """ログレベルを返す"""
+        return str(self._raw.get("general", {}).get("log_level", "INFO"))  # type: ignore[union-attr]
+
+    @property
+    def project_mapping(self) -> dict[str, str]:
+        """プロジェクトパスとプロジェクト名のマッピングを返す"""
+        raw = self._raw.get("projects", {})
+        if isinstance(raw, dict):
+            return {str(k): str(v) for k, v in raw.items()}
+        return {}
+
+    # --- Paths ---
     @property
     def data_dir(self) -> Path:
         """データディレクトリのパスを返す"""
-        if self._data_dir is not None:
-            return self._data_dir
+        general = self._raw.get("general", {})
+        if isinstance(general, dict) and "data_dir" in general:
+            return Path(str(general["data_dir"]))
         return get_data_dir()
 
     @property
     def db_path(self) -> Path:
         """SQLite データベースファイルのパスを返す"""
-        if self._db_path is not None:
-            return self._db_path
+        general = self._raw.get("general", {})
+        if isinstance(general, dict) and "db_path" in general:
+            return Path(str(general["db_path"]))
         return self.data_dir / "memories.db"
+
+    # --- Tags ---
+    @property
+    def tag_rules(self) -> dict[str, TagRule]:
+        """タグルールの辞書を返す"""
+        rules = dict(DEFAULT_TAG_RULES)
+        raw_tags = self._raw.get("tags", {})
+        if isinstance(raw_tags, dict):
+            for tag_name, tag_def in raw_tags.items():
+                if isinstance(tag_def, dict):
+                    rules[str(tag_name)] = TagRule(
+                        keywords=list(tag_def.get("keywords", [])),
+                        threshold=int(tag_def.get("threshold", 1)),
+                        prototype=str(tag_def.get("prototype", "")),
+                    )
+        return rules
 
     @classmethod
     def from_file(cls, path: Path) -> Config:
