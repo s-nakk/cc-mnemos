@@ -217,6 +217,13 @@ def _handle_init(args: argparse.Namespace) -> None:
     """init サブコマンドのハンドラ"""
     run_init()
 
+    if args.import_history:
+        from cc_mnemos.batch_import import import_history
+        from cc_mnemos.config import Config
+
+        cfg = Config.load()
+        import_history(cfg)
+
 
 def _handle_setup(args: argparse.Namespace) -> None:
     """setup サブコマンドのハンドラ"""
@@ -308,6 +315,11 @@ def main() -> None:
     sub_init = subparsers.add_parser(
         "init",
         help="hooks / MCP 設定を登録し CLAUDE.md にルールを追記する",
+    )
+    sub_init.add_argument(
+        "--import-history",
+        action="store_true",
+        help="既存のClaude Codeセッション履歴を一括インポートする",
     )
     sub_init.set_defaults(handler=_handle_init)
 
