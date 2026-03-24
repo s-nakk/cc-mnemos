@@ -227,6 +227,14 @@ class Config:
     _data_dir: Path | None = field(default=None, repr=False)
     _db_path: Path | None = field(default=None, repr=False)
 
+    # --- Embedding (extended) ---
+    embedding_batch_size: int = 32
+
+    # --- Maintenance ---
+    max_chunk_age_days: int = 365
+    max_db_size_mb: int = 500
+    vacuum_interval_days: int = 30
+
     # --- Misc ---
     log_level: str = "INFO"
     project_mapping: dict[str, str] = field(default_factory=dict)
@@ -247,6 +255,10 @@ class Config:
         self.default_search_limit = 10
         self.max_chunk_tokens = 2000
         self.min_chunk_tokens = 20
+        self.embedding_batch_size = 32
+        self.max_chunk_age_days = 365
+        self.max_db_size_mb = 500
+        self.vacuum_interval_days = 30
         self.log_level = "INFO"
         self.project_mapping = {}
         self.tag_rules = dict(DEFAULT_TAG_RULES)
@@ -260,6 +272,18 @@ class Config:
                 self.embedding_model = str(embedding["model"])
             if "dimension" in embedding:
                 self.embedding_dimension = int(embedding["dimension"])  # type: ignore[arg-type]
+            if "batch_size" in embedding:
+                self.embedding_batch_size = int(embedding["batch_size"])  # type: ignore[arg-type]
+
+        # --- maintenance セクション ---
+        maintenance = raw_sections.get("maintenance", {})
+        if isinstance(maintenance, dict):
+            if "max_chunk_age_days" in maintenance:
+                self.max_chunk_age_days = int(maintenance["max_chunk_age_days"])  # type: ignore[arg-type]
+            if "max_db_size_mb" in maintenance:
+                self.max_db_size_mb = int(maintenance["max_db_size_mb"])  # type: ignore[arg-type]
+            if "vacuum_interval_days" in maintenance:
+                self.vacuum_interval_days = int(maintenance["vacuum_interval_days"])  # type: ignore[arg-type]
 
         # --- search セクション ---
         search = raw_sections.get("search", {})
