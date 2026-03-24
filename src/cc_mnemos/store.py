@@ -68,7 +68,7 @@ _CREATE_FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     id UNINDEXED,
     content,
-    tokenize='unicode61'
+    tokenize='trigram'
 );
 """
 
@@ -321,9 +321,9 @@ class MemoryStore:
         Returns:
             FTS5に安全なクエリ文字列
         """
-        # 特殊文字およびハイフンをスペースに置換し、各トークンをダブルクォートで囲む
-        # unicode61トークナイザはハイフンで分割するため、ハイフンもセパレータとして扱う
-        special_chars = set('"*():^{}[]!&|~@#$%-')
+        # FTS5特殊文字をスペースに置換し、各トークンをダブルクォートで囲む
+        # trigramトークナイザは文字レベルn-gramで部分一致検索を行う
+        special_chars = set('"*():^{}[]!&|~@#$%')
         cleaned = ""
         for ch in query:
             if ch in special_chars:
