@@ -18,9 +18,23 @@ class Embedder:
     """sentence-transformersベースのEmbedder"""
 
     def __init__(self, config: Config) -> None:
-        self._model = SentenceTransformer(config.embedding_model)
+        device = self._detect_device()
+        self._model = SentenceTransformer(config.embedding_model, device=device)
         self._batch_size = config.embedding_batch_size
         self._dimension = config.embedding_dimension
+
+    @staticmethod
+    def _detect_device() -> str:
+        """利用可能な最速デバイスを自動検出"""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return "mps"
+        except ImportError:
+            pass
+        return "cpu"
 
     def encode(self, texts: list[str]) -> np.ndarray:
         """テキストリストをバッチエンコード"""

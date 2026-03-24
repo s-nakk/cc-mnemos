@@ -9,6 +9,16 @@ from pathlib import Path
 # 処理対象のメッセージタイプ
 ALLOWED_TYPES = {"user", "human", "assistant"}
 
+# システムテキストのフィルタ（チャンクに含めるべきでない接頭辞）
+_NOISE_PREFIXES = (
+    "Base directory for this skill:",
+    "<task-notification>",
+    "<command-name>",
+    "<command-message>",
+    "<system-reminder>",
+    "ARGUMENTS:",
+)
+
 
 @dataclass
 class Chunk:
@@ -104,8 +114,8 @@ def chunk_transcript(
         text = _extract_text(msg)
 
         if msg_type in ("human", "user"):
-            if text:
-                user_buffer = text
+            if text and not any(text.lstrip().startswith(p) for p in _NOISE_PREFIXES):
+                user_buffer = _truncate_tokens(text, max_tokens)
         elif msg_type == "assistant" and user_buffer:
             # テキストが空の場合はスキップ（thinking-onlyパーツ等）
             # user_bufferは保持し、次のassistantメッセージでペアにする

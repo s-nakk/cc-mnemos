@@ -125,7 +125,7 @@ def import_history(
             embeddings = embedder.encode_documents([c.content for c in chunks])
 
             for idx, chunk in enumerate(chunks):
-                tags = assign_tags(chunk.content, config.tag_rules)
+                tags = assign_tags(chunk.role_user, config.tag_rules)
                 chunk_data: dict[str, str | int] = {
                     "id": str(uuid.uuid4()),
                     "session_id": jsonl.stem,

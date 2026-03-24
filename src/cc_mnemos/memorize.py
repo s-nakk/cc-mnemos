@@ -76,7 +76,7 @@ def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
     chunk_tags_list: list[list[str]] = []
     for i, c in enumerate(chunks):
         tags = tagger.assign_tags(
-            c.content,
+            c.role_user,
             tag_rules,
             chunk_embedding=embeddings[i],
             prototype_embeddings=None,
