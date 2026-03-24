@@ -60,10 +60,17 @@ def _extract_text(msg: dict) -> str:
 def parse_transcript(path: Path) -> list[dict]:
     """JONLファイルをパースし、user/assistantメッセージのみ抽出する"""
     messages: list[dict] = []
+    # 事前フィルタ: JSONパース前に文字列レベルで不要な行をスキップ
+    # 会話に必要な type は "user", "human", "assistant" のみ
+    _prefixes = ('"type":"user"', '"type":"assistant"', '"type":"human"',
+                 '"type": "user"', '"type": "assistant"', '"type": "human"')
     with open(path, encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
             if not line:
+                continue
+            # 文字列レベルで会話メッセージ行だけをJSONパースする
+            if not any(p in line for p in _prefixes):
                 continue
             try:
                 msg = json.loads(line)
