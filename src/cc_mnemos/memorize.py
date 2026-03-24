@@ -71,15 +71,20 @@ def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
     embedder = Embedder(config)
     embeddings = embedder.encode_documents([c.content for c in chunks])
 
-    # 6. タグ付け
+    # 6. タグ付け (content全体で判定 + prototype_embeddings有効化)
     tag_rules = config.tag_rules
+    prototype_embeddings = {
+        name: embedder.encode_topic(rule.prototype)
+        for name, rule in tag_rules.items()
+        if rule.prototype
+    }
     chunk_tags_list: list[list[str]] = []
     for i, c in enumerate(chunks):
         tags = tagger.assign_tags(
-            c.role_user,
+            c.content,
             tag_rules,
             chunk_embedding=embeddings[i],
-            prototype_embeddings=None,
+            prototype_embeddings=prototype_embeddings,
         )
         chunk_tags_list.append(tags)
 
@@ -106,7 +111,7 @@ def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
                 "content": c.content,
                 "tags": json.dumps(chunk_tags_list[i]),
                 "created_at": now,
-                "token_count": len(c.content.split()),
+                "token_count": len(c.content),
             }
             store.insert_chunk(chunk_data, embeddings[i])
 

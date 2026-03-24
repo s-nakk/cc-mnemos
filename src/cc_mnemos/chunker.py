@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,15 @@ _NOISE_PREFIXES = (
     "<system-reminder>",
     "ARGUMENTS:",
 )
+
+# 文脈なし短文パターン（追撃発話）
+_PHATIC_RE = re.compile(
+    r"^(はい|うん|ok|OK|yes|no|了解|ありがとう|A|B|C|D|それで|続けて|進めて|hai)$",
+    re.IGNORECASE,
+)
+
+# 短文の文字数閾値
+_SHORT_MSG_CHARS = 10
 
 
 @dataclass
@@ -37,13 +47,9 @@ def _extract_text(msg: dict) -> str:
     - assistant: msg["message"]["content"] (パーツリスト, textタイプのみ抽出)
     - 旧フォーマット: msg["content"] (文字列 or リスト)
     """
-    # 新フォーマット: msg["message"]["content"]
+    # 新フォーマット: msg["message"]["content"] / 旧フォーマット: msg["content"]
     message = msg.get("message")
-    if isinstance(message, dict):
-        content = message.get("content", "")
-    else:
-        # 旧フォーマット / テストフィクスチャ: msg["content"]
-        content = msg.get("content", "")
+    content = message.get("content", "") if isinstance(message, dict) else msg.get("content", "")
 
     if isinstance(content, str):
         return content.strip()
@@ -102,36 +108,69 @@ def _truncate(text: str) -> str:
     return text[:MAX_CHARS]
 
 
+def _is_short_phatic(text: str) -> bool:
+    """文脈なしの短い追撃発話かどうか判定する"""
+    stripped = text.strip()
+    if _PHATIC_RE.match(stripped):
+        return True
+    return len(stripped) <= _SHORT_MSG_CHARS
+
+
 def chunk_transcript(
     path: Path,
     max_tokens: int = 2000,  # 後方互換（未使用、文字数ベースに移行済み）
     min_tokens: int = 1,     # 後方互換（未使用）
 ) -> list[Chunk]:
-    """会話JONLをQ&Aペアに分割する"""
+    """会話JONLをQ&Aペアに分割する
+
+    連続するuser発話はリストとして蓄積し、assistant応答時にまとめてペアにする。
+    短い追撃発話（「はい」「A」等）は直前チャンクにマージする
+    """
     messages = parse_transcript(path)
     chunks: list[Chunk] = []
-    user_buffer: str = ""
+    user_parts: list[str] = []  # 連続user発話を蓄積
+    prev_chunk: Chunk | None = None  # 直前のチャンク（短文マージ用）
+
     for msg in messages:
         msg_type = msg.get("type", "")
         text = _extract_text(msg)
 
         if msg_type in ("human", "user"):
             if text and not any(text.lstrip().startswith(p) for p in _NOISE_PREFIXES):
-                user_buffer = _truncate(text)
-        elif msg_type == "assistant" and user_buffer:
+                user_parts.append(_truncate(text))
+        elif msg_type == "assistant" and user_parts:
             # テキストが空の場合はスキップ（thinking-onlyパーツ等）
-            # user_bufferは保持し、次のassistantメッセージでペアにする
+            # user_partsは保持し、次のassistantメッセージでペアにする
             if not text:
                 continue
+
             assistant_text = _truncate(text)
-            content = f"{user_buffer}\n{assistant_text}"
-            if len(content) >= 20:
-                chunks.append(
-                    Chunk(
-                        role_user=user_buffer,
+            user_combined = "\n".join(user_parts)
+
+            # 短い追撃発話は直前チャンクにマージ
+            if _is_short_phatic(user_combined) and prev_chunk is not None:
+                # 直前チャンクの文脈を前置して新チャンクにする
+                user_with_context = f"{prev_chunk.role_user}\n{user_combined}"
+                user_with_context = _truncate(user_with_context)
+                content = f"{user_with_context}\n{assistant_text}"
+                if len(content) >= 20:
+                    new_chunk = Chunk(
+                        role_user=user_with_context,
                         role_assistant=assistant_text,
                         content=content,
-                    ),
-                )
-            user_buffer = ""
+                    )
+                    chunks.append(new_chunk)
+                    prev_chunk = new_chunk
+            else:
+                content = f"{user_combined}\n{assistant_text}"
+                if len(content) >= 20:
+                    new_chunk = Chunk(
+                        role_user=user_combined,
+                        role_assistant=assistant_text,
+                        content=content,
+                    )
+                    chunks.append(new_chunk)
+                    prev_chunk = new_chunk
+
+            user_parts = []  # リセット
     return chunks

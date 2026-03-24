@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 QUERY_PREFIX = "検索クエリ: "
 DOCUMENT_PREFIX = "検索文書: "
+TOPIC_PREFIX = "トピック: "
 
 
 class Embedder:
@@ -59,4 +60,14 @@ class Embedder:
     def encode_documents(self, texts: list[str]) -> np.ndarray:
         """複数ドキュメントをバッチエンコード（プレフィックス付き）"""
         prefixed = [f"{DOCUMENT_PREFIX}{t}" for t in texts]
+        return self.encode(prefixed)
+
+    def encode_topic(self, text: str) -> np.ndarray:
+        """トピック用プレフィックスを付けてエンコード"""
+        result = self.encode([f"{TOPIC_PREFIX}{text}"])
+        return result[0]
+
+    def encode_topics(self, texts: list[str]) -> np.ndarray:
+        """複数トピックをバッチエンコード（プレフィックス付き）"""
+        prefixed = [f"{TOPIC_PREFIX}{t}" for t in texts]
         return self.encode(prefixed)

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # スキーマ定義SQL
@@ -156,10 +156,57 @@ class MemoryStore:
             dim = self._config.embedding_dimension
             self.conn.execute(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks "
-                f"USING vec0(embedding float[{dim}])"
+                f"USING vec0(embedding float[{dim}] distance_metric=cosine)"
             )
 
+        # マイグレーション
+        self._migrate()
+
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """スキーマバージョンに基づいてマイグレーションを実行する"""
+        row = self.conn.execute("SELECT version FROM schema_version").fetchone()
+        if row is None:
+            return
+        current = int(row[0])
+        if current >= SCHEMA_VERSION:
+            return
+
+        # v1 → v2: vec_chunksをcosine距離で再構築
+        if current < 2 and self._use_sqlite_vec:
+            logger.info("マイグレーション v1→v2: vec_chunksをcosine距離で再構築します")
+            dim = self._config.embedding_dimension
+            self.conn.execute("DROP TABLE IF EXISTS vec_chunks")
+            self.conn.execute(
+                f"CREATE VIRTUAL TABLE vec_chunks "
+                f"USING vec0(embedding float[{dim}] distance_metric=cosine)"
+            )
+            # chunk_vec_mapをリセットして再構築
+            self.conn.execute("DELETE FROM chunk_vec_map")
+            rows = self.conn.execute(
+                "SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL"
+            ).fetchall()
+            for r in rows:
+                chunk_id = r[0]
+                emb_blob = r[1]
+                if emb_blob is None:
+                    continue
+                self.conn.execute(
+                    "INSERT INTO chunk_vec_map(chunk_id) VALUES(?)", (chunk_id,)
+                )
+                int_rowid = self.conn.execute(
+                    "SELECT last_insert_rowid()"
+                ).fetchone()[0]
+                self.conn.execute(
+                    "INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)",
+                    (int_rowid, emb_blob),
+                )
+
+        self.conn.execute(
+            "UPDATE schema_version SET version = ?", (SCHEMA_VERSION,)
+        )
+        logger.info("スキーマをバージョン %d に更新しました", SCHEMA_VERSION)
 
     def insert_session(
         self,
@@ -286,6 +333,10 @@ class MemoryStore:
     ) -> list[dict[str, str | int | float]]:
         """FTS5全文検索を実行する
 
+        trigramで3文字以上のトークンはFTS5 MATCH(AND結合)、
+        3文字未満の短語はLIKEフォールバックで検索する。
+        AND結合で0件の場合はOR結合にフォールバックする
+
         Args:
             query: 検索クエリ文字列
             limit: 結果の最大件数
@@ -293,36 +344,74 @@ class MemoryStore:
         Returns:
             マッチしたチャンクのリスト
         """
-        sanitized = self._sanitize_fts_query(query)
-        if not sanitized:
-            return []
+        long_tokens, short_tokens = self._split_query_tokens(query)
 
-        rows = self.conn.execute(
-            """
-            SELECT c.*, rank
-            FROM chunks_fts f
-            JOIN chunks c ON c.id = f.id
-            WHERE chunks_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
-            """,
-            (sanitized, limit),
-        ).fetchall()
+        results: list[dict[str, str | int | float]] = []
 
-        return [dict(row) for row in rows]
+        # FTS5検索 (3文字以上のトークン)
+        if long_tokens:
+            # AND結合で検索
+            and_query = " AND ".join(f'"{t}"' for t in long_tokens)
+            rows = self.conn.execute(
+                """
+                SELECT c.*, rank
+                FROM chunks_fts f
+                JOIN chunks c ON c.id = f.id
+                WHERE chunks_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (and_query, limit),
+            ).fetchall()
+            results = [dict(row) for row in rows]
+
+            # AND結合で0件の場合はOR結合にフォールバック
+            if not results and len(long_tokens) > 1:
+                or_query = " OR ".join(f'"{t}"' for t in long_tokens)
+                rows = self.conn.execute(
+                    """
+                    SELECT c.*, rank
+                    FROM chunks_fts f
+                    JOIN chunks c ON c.id = f.id
+                    WHERE chunks_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (or_query, limit),
+                ).fetchall()
+                results = [dict(row) for row in rows]
+
+        # 短語のLIKEフォールバック (3文字未満)
+        if short_tokens:
+            seen_ids = {str(r["id"]) for r in results}
+            for token in short_tokens:
+                rows = self.conn.execute(
+                    """
+                    SELECT c.*, 0 as rank
+                    FROM chunks c
+                    WHERE c.content LIKE ?
+                    LIMIT ?
+                    """,
+                    (f"%{token}%", limit),
+                ).fetchall()
+                for row in rows:
+                    d = dict(row)
+                    if str(d["id"]) not in seen_ids:
+                        results.append(d)
+                        seen_ids.add(str(d["id"]))
+
+        return results[:limit]
 
     @staticmethod
-    def _sanitize_fts_query(query: str) -> str:
-        """FTS5クエリ用に文字列をサニタイズする
+    def _split_query_tokens(query: str) -> tuple[list[str], list[str]]:
+        """クエリをFTS5用トークンと短語に分割する
 
         Args:
             query: 生のクエリ文字列
 
         Returns:
-            FTS5に安全なクエリ文字列
+            (3文字以上のトークンリスト, 3文字未満の短語リスト)
         """
-        # FTS5特殊文字をスペースに置換し、各トークンをダブルクォートで囲む
-        # trigramトークナイザは文字レベルn-gramで部分一致検索を行う
         special_chars = set('"*():^{}[]!&|~@#$%')
         cleaned = ""
         for ch in query:
@@ -332,12 +421,16 @@ class MemoryStore:
                 cleaned += ch
 
         tokens = cleaned.split()
-        if not tokens:
-            return ""
-
-        # 各トークンをダブルクォートで囲み、OR結合
-        quoted = [f'"{token}"' for token in tokens if token]
-        return " OR ".join(quoted)
+        long_tokens: list[str] = []
+        short_tokens: list[str] = []
+        for t in tokens:
+            if not t:
+                continue
+            if len(t) >= 3:
+                long_tokens.append(t)
+            else:
+                short_tokens.append(t)
+        return long_tokens, short_tokens
 
     def vector_search(
         self,
@@ -479,6 +572,8 @@ class MemoryStore:
         """
         k = self._config.rrf_k
         half_life = self._config.time_decay_half_life_days
+        fts_weight = self._config.fts_weight
+        vector_weight = self._config.vector_weight
 
         # 検索用にlimitを拡張(フィルタ後に絞るため)
         expanded_limit = limit * 5
@@ -489,18 +584,20 @@ class MemoryStore:
         # ベクトル検索
         vec_results = self.vector_search(query_embedding, limit=expanded_limit)
 
-        # RRFスコア計算
+        # 重み付きRRFスコア計算
         rrf_scores: dict[str, float] = {}
         chunk_data: dict[str, dict[str, str | int | float]] = {}
 
         for rank, result in enumerate(fts_results):
             chunk_id = str(result["id"])
-            rrf_scores[chunk_id] = rrf_scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
+            rrf_scores[chunk_id] = rrf_scores.get(chunk_id, 0.0) + fts_weight / (k + rank + 1)
             chunk_data[chunk_id] = result
 
         for rank, result in enumerate(vec_results):
             chunk_id = str(result["id"])
-            rrf_scores[chunk_id] = rrf_scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
+            rrf_scores[chunk_id] = (
+                rrf_scores.get(chunk_id, 0.0) + vector_weight / (k + rank + 1)
+            )
             if chunk_id not in chunk_data:
                 chunk_data[chunk_id] = result
 

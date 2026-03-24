@@ -39,9 +39,13 @@ DEFAULT_TAG_RULES: dict[str, TagRule] = {
             r"UI|UX|アクセシビリティ|accessibility",
             r"ボタン|モーダル|ナビ|サイドバー|カード",
             r"見た目|見栄え|余白|角丸|border-radius",
+            r"css|CSS|スタイル|style",
+            r"rounded|radius|corner",
+            r"tailwind|Tailwind",
+            r"token|theme|テーマ",
         ],
         threshold=2,
-        prototype="UI design layout color font spacing component appearance",
+        prototype="UI design layout color font spacing component appearance CSS style",
     ),
     "coding-style": TagRule(
         keywords=[
@@ -83,7 +87,7 @@ DEFAULT_TAG_RULES: dict[str, TagRule] = {
             r"package\.json|pyproject|Cargo\.toml",
             r"ビルド|build|webpack|vite",
         ],
-        threshold=1,
+        threshold=2,
         prototype="configuration environment variable build settings",
     ),
     "decision": TagRule(
@@ -211,7 +215,17 @@ class Config:
     @property
     def time_decay_half_life_days(self) -> int:
         """時間減衰の半減期(日)を返す"""
-        return int(self._raw.get("search", {}).get("time_decay_half_life_days", 30))  # type: ignore[union-attr]
+        return int(self._raw.get("search", {}).get("time_decay_half_life_days", 180))  # type: ignore[union-attr]
+
+    @property
+    def fts_weight(self) -> float:
+        """RRFにおけるFTSスコアの重みを返す"""
+        return float(self._raw.get("search", {}).get("fts_weight", 2.0))  # type: ignore[union-attr]
+
+    @property
+    def vector_weight(self) -> float:
+        """RRFにおけるベクトルスコアの重みを返す"""
+        return float(self._raw.get("search", {}).get("vector_weight", 0.75))  # type: ignore[union-attr]
 
     @property
     def default_search_limit(self) -> int:

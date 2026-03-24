@@ -34,7 +34,9 @@ class TestConfig:
         assert config.embedding_model == "cl-nagoya/ruri-v3-310m"
         assert config.embedding_dimension == 768
         assert config.rrf_k == 60
-        assert config.time_decay_half_life_days == 30
+        assert config.time_decay_half_life_days == 180
+        assert config.fts_weight == 2.0
+        assert config.vector_weight == 0.75
         assert config.max_chunk_tokens == 2000
         assert config.min_chunk_tokens == 20
         assert config.default_search_limit == 10

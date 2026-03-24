@@ -27,6 +27,11 @@ def _mock_encode_documents(texts: list[str]) -> np.ndarray:
     return _RNG.random((len(texts), 768)).astype(np.float32)
 
 
+def _mock_encode_topic(text: str) -> np.ndarray:
+    """テスト用: 単一トピックのダミー埋め込みを返す"""
+    return _RNG.random(768).astype(np.float32)
+
+
 class TestResolveCwd:
     """_resolve_cwd のユニットテスト"""
 
@@ -70,6 +75,7 @@ class TestImportHistory:
         # Embedder をモックして高速化
         mock_embedder = MagicMock()
         mock_embedder.encode_documents.side_effect = _mock_encode_documents
+        mock_embedder.encode_topic.side_effect = _mock_encode_topic
 
         with (
             patch("cc_mnemos.batch_import.Path.home") as mock_home,
@@ -153,6 +159,7 @@ class TestImportHistory:
 
         mock_embedder = MagicMock()
         mock_embedder.encode_documents.side_effect = _mock_encode_documents
+        mock_embedder.encode_topic.side_effect = _mock_encode_topic
 
         with (
             patch("cc_mnemos.batch_import.Path.home") as mock_home,

@@ -68,6 +68,10 @@ def tag_by_embedding(
     return matched_tags if matched_tags else ["general"]
 
 
+# 短文閾値: この文字数未満ならkeyword+embedding両方を併用
+SHORT_TEXT_THRESHOLD = 40
+
+
 def assign_tags(
     text: str,
     tag_rules: dict[str, TagRule],
@@ -78,8 +82,9 @@ def assign_tags(
     """2段階タグ付けを実行
 
     Stage 1 でキーワードマッチングを試み、マッチしなければ
-    Stage 2 で埋め込み類似度を使用する。いずれもマッチしなければ
-    ``["general"]`` を返す
+    Stage 2 で埋め込み類似度を使用する。
+    短文(40文字未満)の場合はkeyword+embeddingの結果をunionする。
+    いずれもマッチしなければ ``["general"]`` を返す
 
     Args:
         text: タグ付け対象のテキスト
@@ -91,11 +96,24 @@ def assign_tags(
     Returns:
         付与されたタグ名のリスト
     """
-    tags = tag_by_keywords(text, tag_rules)
-    if tags:
-        return tags
-    if chunk_embedding is not None and prototype_embeddings is not None:
+    keyword_tags = tag_by_keywords(text, tag_rules)
+    has_embeddings = chunk_embedding is not None and prototype_embeddings is not None
+
+    # 短文は keyword + embedding を union して精度を上げる
+    if len(text) < SHORT_TEXT_THRESHOLD and has_embeddings:
+        emb_tags = tag_by_embedding(
+            chunk_embedding, prototype_embeddings, embedding_threshold  # type: ignore[arg-type]
+        )
+        # "general" のみの場合は実質マッチなし
+        emb_real = [t for t in emb_tags if t != "general"]
+        combined = list(dict.fromkeys(keyword_tags + emb_real))
+        return combined if combined else ["general"]
+
+    # 通常テキスト: keyword優先、なければembeddingフォールバック
+    if keyword_tags:
+        return keyword_tags
+    if has_embeddings:
         return tag_by_embedding(
-            chunk_embedding, prototype_embeddings, embedding_threshold
+            chunk_embedding, prototype_embeddings, embedding_threshold  # type: ignore[arg-type]
         )
     return ["general"]

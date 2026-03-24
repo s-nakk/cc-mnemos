@@ -100,6 +100,14 @@ def import_history(
     errors = 0
     start = time.time()
 
+    # prototype_embeddingsを1回だけ構築
+    tag_rules = config.tag_rules
+    prototype_embeddings = {
+        name: embedder.encode_topic(rule.prototype)
+        for name, rule in tag_rules.items()
+        if rule.prototype
+    }
+
     for i, jsonl in enumerate(sorted(all_files)):
         try:
             rel = jsonl.relative_to(projects_dir)
@@ -111,21 +119,29 @@ def import_history(
                 continue
 
             project = _infer_project(cwd)
-            now_str = datetime.now(tz=timezone.utc).isoformat()
+
+            # JONLのmtimeを使用（インポート時刻ではなく実際のセッション時刻）
+            mtime = jsonl.stat().st_mtime
+            session_time = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
 
             store.insert_session(
                 session_id=jsonl.stem,
                 project=project,
                 work_dir=cwd,
-                started_at=now_str,
-                ended_at=now_str,
+                started_at=session_time,
+                ended_at=session_time,
             )
 
             # バッチエンコード
             embeddings = embedder.encode_documents([c.content for c in chunks])
 
             for idx, chunk in enumerate(chunks):
-                tags = assign_tags(chunk.role_user, config.tag_rules)
+                tags = assign_tags(
+                    chunk.content,
+                    tag_rules,
+                    chunk_embedding=embeddings[idx],
+                    prototype_embeddings=prototype_embeddings,
+                )
                 chunk_data: dict[str, str | int] = {
                     "id": str(uuid.uuid4()),
                     "session_id": jsonl.stem,
@@ -133,8 +149,8 @@ def import_history(
                     "role_assistant": chunk.role_assistant,
                     "content": chunk.content,
                     "tags": json.dumps(tags),
-                    "created_at": now_str,
-                    "token_count": len(chunk.content.split()),
+                    "created_at": session_time,
+                    "token_count": len(chunk.content),
                 }
                 store.insert_chunk(chunk_data, embeddings[idx])
 
