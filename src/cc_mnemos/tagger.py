@@ -78,6 +78,7 @@ def assign_tags(
     chunk_embedding: np.ndarray | None = None,
     prototype_embeddings: dict[str, np.ndarray] | None = None,
     embedding_threshold: float = 0.5,
+    keyword_text: str | None = None,
 ) -> list[str]:
     """2段階タグ付けを実行
 
@@ -87,20 +88,23 @@ def assign_tags(
     いずれもマッチしなければ ``["general"]`` を返す
 
     Args:
-        text: タグ付け対象のテキスト
+        text: 埋め込み判定用テキスト (content全体を推奨)
         tag_rules: タグ名とルールのマッピング
         chunk_embedding: チャンクの埋め込みベクトル (省略可)
         prototype_embeddings: タグ名とプロトタイプ埋め込みのマッピング (省略可)
         embedding_threshold: コサイン類似度の閾値
+        keyword_text: キーワードマッチ用テキスト (省略時はtextを使用。
+            ユーザー発話のみを渡すとassistant応答の汎用語句に引きずられない)
 
     Returns:
         付与されたタグ名のリスト
     """
-    keyword_tags = tag_by_keywords(text, tag_rules)
+    kw_text = keyword_text if keyword_text is not None else text
+    keyword_tags = tag_by_keywords(kw_text, tag_rules)
     has_embeddings = chunk_embedding is not None and prototype_embeddings is not None
 
     # 短文は keyword + embedding を union して精度を上げる
-    if len(text) < SHORT_TEXT_THRESHOLD and has_embeddings:
+    if len(kw_text) < SHORT_TEXT_THRESHOLD and has_embeddings:
         emb_tags = tag_by_embedding(
             chunk_embedding, prototype_embeddings, embedding_threshold  # type: ignore[arg-type]
         )

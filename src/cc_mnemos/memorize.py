@@ -71,20 +71,15 @@ def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
     embedder = Embedder(config)
     embeddings = embedder.encode_documents([c.content for c in chunks])
 
-    # 6. タグ付け (content全体で判定 + prototype_embeddings有効化)
+    # 6. タグ付け (キーワードはrole_userで判定、embeddingフォールバックは
+    #    現在のprototype文では精度が出ないため無効化)
     tag_rules = config.tag_rules
-    prototype_embeddings = {
-        name: embedder.encode_topic(rule.prototype)
-        for name, rule in tag_rules.items()
-        if rule.prototype
-    }
     chunk_tags_list: list[list[str]] = []
-    for i, c in enumerate(chunks):
+    for c in chunks:
         tags = tagger.assign_tags(
             c.content,
             tag_rules,
-            chunk_embedding=embeddings[i],
-            prototype_embeddings=prototype_embeddings,
+            keyword_text=c.role_user,
         )
         chunk_tags_list.append(tags)
 

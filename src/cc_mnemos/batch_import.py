@@ -100,13 +100,7 @@ def import_history(
     errors = 0
     start = time.time()
 
-    # prototype_embeddingsを1回だけ構築
     tag_rules = config.tag_rules
-    prototype_embeddings = {
-        name: embedder.encode_topic(rule.prototype)
-        for name, rule in tag_rules.items()
-        if rule.prototype
-    }
 
     for i, jsonl in enumerate(sorted(all_files)):
         try:
@@ -139,8 +133,7 @@ def import_history(
                 tags = assign_tags(
                     chunk.content,
                     tag_rules,
-                    chunk_embedding=embeddings[idx],
-                    prototype_embeddings=prototype_embeddings,
+                    keyword_text=chunk.role_user,
                 )
                 chunk_data: dict[str, str | int] = {
                     "id": str(uuid.uuid4()),

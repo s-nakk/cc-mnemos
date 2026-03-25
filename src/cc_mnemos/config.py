@@ -77,7 +77,7 @@ DEFAULT_TAG_RULES: dict[str, TagRule] = {
             r"デバッグ|debug",
             r"スタックトレース|stack\s*trace|traceback",
         ],
-        threshold=1,
+        threshold=2,
         prototype="bug fix error debug stack trace exception",
     ),
     "config": TagRule(
