@@ -109,10 +109,36 @@ def run_init(
     print("init 完了: settings.json と CLAUDE.md を更新しました")
 
 
+def _resolve_command_path() -> str:
+    """cc-mnemos コマンドのフルパスを解決する
+
+    .venv 内のexeが存在すればフルパスを返し、PATHに依存しない実行を保証する
+    """
+    import shutil
+
+    # 1. shutil.which で探す（PATHに含まれている場合）
+    found = shutil.which("cc-mnemos")
+    if found:
+        return found
+
+    # 2. 現在のPythonと同じ環境の Scripts/bin を探す
+    scripts_dir = Path(sys.executable).parent
+    for name in ("cc-mnemos.exe", "cc-mnemos"):
+        candidate = scripts_dir / name
+        if candidate.exists():
+            return str(candidate)
+
+    # 3. フォールバック: そのまま返す（ユーザーがPATHに追加する前提）
+    return "cc-mnemos"
+
+
 def _update_settings(settings_path: Path) -> None:
     """settings.json にフック・MCP 設定をマージする"""
     # 親ディレクトリ作成
     settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # cc-mnemos のフルパスを解決
+    cmd_path = _resolve_command_path()
 
     # 既存設定の読み込み
     if settings_path.exists():
@@ -127,9 +153,19 @@ def _update_settings(settings_path: Path) -> None:
         hooks = {}
         settings["hooks"] = hooks
 
-    for event_name, event_entries in _HOOKS_CONFIG.items():
-        if event_name not in hooks:
-            hooks[event_name] = event_entries
+    # コマンドパスを実際のパスに置換したhook設定を生成
+    import copy
+    resolved_hooks = copy.deepcopy(_HOOKS_CONFIG)
+    for entries in resolved_hooks.values():
+        for entry in entries:
+            for hook in entry.get("hooks", []):
+                cmd = hook.get("command", "")
+                if isinstance(cmd, str):
+                    hook["command"] = cmd.replace("cc-mnemos", cmd_path, 1)
+
+    for event_name, event_entries in resolved_hooks.items():
+        # 新規も既存も常に上書き（パス更新のため）
+        hooks[event_name] = event_entries
 
     # mcpServers のマージ
     mcp_servers = settings.setdefault("mcpServers", {})
@@ -137,8 +173,11 @@ def _update_settings(settings_path: Path) -> None:
         mcp_servers = {}
         settings["mcpServers"] = mcp_servers
 
-    if "cc-mnemos" not in mcp_servers:
-        mcp_servers["cc-mnemos"] = _MCP_SERVER_CONFIG
+    # 常にパスを更新
+    mcp_servers["cc-mnemos"] = {
+        "command": cmd_path,
+        "args": ["server"],
+    }
 
     # 書き戻し
     settings_path.write_text(
