@@ -88,11 +88,19 @@ def _run_prompt_inject_impl(hook_input: dict[str, object], config: Config) -> No
     if not results:
         return
 
-    # 有意な結果のみフィルタ
-    meaningful = [
-        r for r in results
-        if len(str(r.get("content", ""))) >= _MIN_CONTENT_LEN
-    ]
+    # 有意な結果のみフィルタ + content重複排除
+    seen_contents: set[str] = set()
+    meaningful: list[dict[str, str | int | float]] = []
+    for r in results:
+        content = str(r.get("content", ""))
+        if len(content) < _MIN_CONTENT_LEN:
+            continue
+        # 先頭200文字で重複判定（同一会話の類似チャンクを排除）
+        content_key = content[:200]
+        if content_key in seen_contents:
+            continue
+        seen_contents.add(content_key)
+        meaningful.append(r)
     if not meaningful:
         return
 
