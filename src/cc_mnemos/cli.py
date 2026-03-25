@@ -132,13 +132,22 @@ def _resolve_command_path() -> str:
     return "cc-mnemos"
 
 
+def _normalize_path(path: str) -> str:
+    """Windowsパスをフォワードスラッシュに正規化する
+
+    Claude Codeのhookはシェル経由で実行されるため、
+    バックスラッシュだと問題を起こす場合がある
+    """
+    return path.replace("\\", "/")
+
+
 def _update_settings(settings_path: Path) -> None:
     """settings.json にフック・MCP 設定をマージする"""
     # 親ディレクトリ作成
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # cc-mnemos のフルパスを解決
-    cmd_path = _resolve_command_path()
+    # cc-mnemos のフルパスを解決（フォワードスラッシュに正規化）
+    cmd_path = _normalize_path(_resolve_command_path())
 
     # 既存設定の読み込み
     if settings_path.exists():
