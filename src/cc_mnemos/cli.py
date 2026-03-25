@@ -61,6 +61,18 @@ _HOOKS_CONFIG: dict[str, list[dict[str, object]]] = {
             ],
         },
     ],
+    "UserPromptSubmit": [
+        {
+            "matcher": "",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "cc-mnemos prompt-inject",
+                    "timeout": 5,
+                },
+            ],
+        },
+    ],
 }
 
 _MCP_SERVER_CONFIG: dict[str, object] = {
@@ -206,6 +218,16 @@ def _handle_recall(args: argparse.Namespace) -> None:
     run_recall(hook_input, cfg)
 
 
+def _handle_prompt_inject(args: argparse.Namespace) -> None:
+    """prompt-inject サブコマンドのハンドラ"""
+    from cc_mnemos.config import Config
+    from cc_mnemos.prompt_inject import run_prompt_inject
+
+    hook_input: dict[str, object] = json.load(sys.stdin)
+    cfg = Config.load()
+    run_prompt_inject(hook_input, cfg)
+
+
 def _handle_server(args: argparse.Namespace) -> None:
     """server サブコマンドのハンドラ"""
     from cc_mnemos.server import run_server
@@ -303,6 +325,13 @@ def main() -> None:
         help="セッション開始時に過去の記憶を注入する (hook stdin から JSON を読み取り)",
     )
     sub_recall.set_defaults(handler=_handle_recall)
+
+    # prompt-inject
+    sub_prompt_inject = subparsers.add_parser(
+        "prompt-inject",
+        help="ユーザー発話に関連する記憶を検索・注入する (UserPromptSubmit hook)",
+    )
+    sub_prompt_inject.set_defaults(handler=_handle_prompt_inject)
 
     # server
     sub_server = subparsers.add_parser(
