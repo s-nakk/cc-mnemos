@@ -26,9 +26,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/shuyo/cc-mnemos"
-Repository = "https://github.com/shuyo/cc-mnemos"
-Issues = "https://github.com/shuyo/cc-mnemos/issues"
+Homepage = "https://github.com/s-nakk/cc-mnemos"
+Repository = "https://github.com/s-nakk/cc-mnemos"
+Issues = "https://github.com/s-nakk/cc-mnemos/issues"
 dependencies = [
     "sentence-transformers>=5.0.0",
     "sqlite-vec>=0.1.0",
