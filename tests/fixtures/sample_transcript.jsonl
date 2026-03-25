@@ -1,8 +1,8 @@
 {"type":"human","content":"ボタンの角丸は border-radius をどれくらいに設定するのがベストプラクティスでしょうか？ design system の観点からも教えてください"}
-{"type":"assistant","content":"Resitoly 全体で border-radius: 8px に統一することを推奨します。CTA ボタンのみ border-radius: 12px にすると視認性が上がります。Material Design 3 では 12px を標準としていますが、プロジェクトの design system に合わせて調整してください。color token と spacing token も合わせて定義すると UI の一貫性が保てます。"}
+{"type":"assistant","content":"MyApp 全体で border-radius: 8px に統一することを推奨します。CTA ボタンのみ border-radius: 12px にすると視認性が上がります。Material Design 3 では 12px を標準としていますが、プロジェクトの design system に合わせて調整してください。color token と spacing token も合わせて定義すると UI の一貫性が保てます。"}
 {"type":"human","content":"Zustand の導入を検討しています。React の state management library として Redux や Jotai と比較した場合のメリットとデメリットを教えてください"}
 {"type":"tool_use","name":"Read","content":"...ファイル内容..."}
 {"type":"tool_result","content":"...結果..."}
-{"type":"assistant","content":"Zustand v5 を推奨します。軽量で TypeScript の型安全性が高く、Resitoly の規模に適しています。Redux と比較して boilerplate code が大幅に少なく、learning curve も低いです。Jotai は atom based で fine-grained reactivity に優れますが、Zustand の方が store pattern に慣れたチームには導入しやすいでしょう。middleware support も充実しており、persist middleware で localStorage への永続化も簡単です。"}
+{"type":"assistant","content":"Zustand v5 を推奨します。軽量で TypeScript の型安全性が高く、MyApp の規模に適しています。Redux と比較して boilerplate code が大幅に少なく、learning curve も低いです。Jotai は atom based で fine-grained reactivity に優れますが、Zustand の方が store pattern に慣れたチームには導入しやすいでしょう。middleware support も充実しており、persist middleware で localStorage への永続化も簡単です。"}
 {"type":"human","content":"こんにちは"}
 {"type":"assistant","content":"こんにちは！何かお手伝いできることはありますか？"}
