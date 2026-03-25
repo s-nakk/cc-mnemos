@@ -15,14 +15,35 @@ import logging
 import socket
 import sys
 import threading
+from typing import TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from cc_mnemos.config import Config
+    from cc_mnemos.embedder import Embedder
+
+
+def _coerce_tags(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    return [str(tag) for tag in value]
+
+
+def _coerce_project(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _coerce_limit(value: object, default: int = 10) -> int:
+    return value if isinstance(value, int) else default
 
 
 def _handle_client(
     conn: socket.socket,
-    embedder: object,
-    config: object,
+    embedder: Embedder,
+    config: Config,
 ) -> None:
     """1クライアントのリクエストを処理する"""
     from cc_mnemos.store import MemoryStore
@@ -38,15 +59,21 @@ def _handle_client(
                 break
 
         request = json.loads(data.decode("utf-8"))
-        store = MemoryStore(config)  # type: ignore[arg-type]
+        if not isinstance(request, dict):
+            raise ValueError("request payload must be an object")
+        query = request.get("query")
+        if not isinstance(query, str):
+            raise ValueError("query must be a string")
+
+        store = MemoryStore(config)
         try:
-            qe = embedder.encode_query(request["query"])  # type: ignore[union-attr]
+            qe = embedder.encode_query(query)
             results = store.hybrid_search(
-                query_text=request["query"],
+                query_text=query,
                 query_embedding=qe,
-                tags=request.get("tags"),
-                project=request.get("project"),
-                limit=request.get("limit", 10),
+                tags=_coerce_tags(request.get("tags")),
+                project=_coerce_project(request.get("project")),
+                limit=_coerce_limit(request.get("limit", 10)),
             )
             response = json.dumps(results, ensure_ascii=False)
         finally:
@@ -91,6 +118,8 @@ def main() -> None:
     elif len(sys.argv) >= 2:
         # レガシー: 単発実行モード
         args = json.loads(sys.argv[1])
+        if not isinstance(args, dict):
+            raise ValueError("arguments must be a JSON object")
         from cc_mnemos.config import Config
         from cc_mnemos.embedder import Embedder
         from cc_mnemos.store import MemoryStore
@@ -99,13 +128,16 @@ def main() -> None:
         embedder = Embedder(cfg)
         store = MemoryStore(cfg)
         try:
-            qe = embedder.encode_query(args["query"])
+            query = args.get("query")
+            if not isinstance(query, str):
+                raise ValueError("query must be a string")
+            qe = embedder.encode_query(query)
             results = store.hybrid_search(
-                query_text=args["query"],
+                query_text=query,
                 query_embedding=qe,
-                tags=args.get("tags"),
-                project=args.get("project"),
-                limit=args.get("limit", 10),
+                tags=_coerce_tags(args.get("tags")),
+                project=_coerce_project(args.get("project")),
+                limit=_coerce_limit(args.get("limit", 10)),
             )
             print(json.dumps(results, ensure_ascii=False))
         finally:

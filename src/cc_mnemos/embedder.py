@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
+from numpy.typing import NDArray
 from sentence_transformers import SentenceTransformer
 
 if TYPE_CHECKING:
@@ -46,7 +47,7 @@ class Embedder:
             pass
         return "cpu"
 
-    def encode(self, texts: list[str]) -> np.ndarray:
+    def encode(self, texts: list[str]) -> NDArray[np.float32]:
         """テキストリストをバッチエンコード"""
         embeddings = self._model.encode(
             texts,
@@ -56,27 +57,27 @@ class Embedder:
         )
         return np.asarray(embeddings, dtype=np.float32)
 
-    def encode_query(self, text: str) -> np.ndarray:
+    def encode_query(self, text: str) -> NDArray[np.float32]:
         """検索クエリ用プレフィックスを付けてエンコード"""
         result = self.encode([f"{QUERY_PREFIX}{text}"])
-        return result[0]
+        return np.asarray(result[0], dtype=np.float32)
 
-    def encode_document(self, text: str) -> np.ndarray:
+    def encode_document(self, text: str) -> NDArray[np.float32]:
         """ドキュメント用プレフィックスを付けてエンコード"""
         result = self.encode([f"{DOCUMENT_PREFIX}{text}"])
-        return result[0]
+        return np.asarray(result[0], dtype=np.float32)
 
-    def encode_documents(self, texts: list[str]) -> np.ndarray:
+    def encode_documents(self, texts: list[str]) -> NDArray[np.float32]:
         """複数ドキュメントをバッチエンコード（プレフィックス付き）"""
         prefixed = [f"{DOCUMENT_PREFIX}{t}" for t in texts]
         return self.encode(prefixed)
 
-    def encode_topic(self, text: str) -> np.ndarray:
+    def encode_topic(self, text: str) -> NDArray[np.float32]:
         """トピック用プレフィックスを付けてエンコード"""
         result = self.encode([f"{TOPIC_PREFIX}{text}"])
-        return result[0]
+        return np.asarray(result[0], dtype=np.float32)
 
-    def encode_topics(self, texts: list[str]) -> np.ndarray:
+    def encode_topics(self, texts: list[str]) -> NDArray[np.float32]:
         """複数トピックをバッチエンコード（プレフィックス付き）"""
         prefixed = [f"{TOPIC_PREFIX}{t}" for t in texts]
         return self.encode(prefixed)

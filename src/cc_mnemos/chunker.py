@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+TranscriptMessage = dict[str, object]
+
 # 処理対象のメッセージタイプ
 ALLOWED_TYPES = {"user", "human", "assistant"}
 
@@ -39,7 +41,7 @@ class Chunk:
     content: str  # role_user + "\n" + role_assistant
 
 
-def _extract_text(msg: dict) -> str:
+def _extract_text(msg: TranscriptMessage) -> str:
     """メッセージからテキストを抽出する
 
     Claude Code JONLの実際のフォーマットに対応:
@@ -59,12 +61,15 @@ def _extract_text(msg: dict) -> str:
         texts: list[str] = []
         for part in content:
             if isinstance(part, dict):
-                if part.get("type") == "text":
-                    texts.append(part.get("text", ""))
-                elif part.get("type") not in ("thinking", "tool_use", "tool_result"):
+                part_type = part.get("type")
+                if part_type == "text":
+                    text_value = part.get("text", "")
+                    if isinstance(text_value, str):
+                        texts.append(text_value)
+                elif part_type not in ("thinking", "tool_use", "tool_result"):
                     # 未知のタイプでもtextフィールドがあれば抽出
                     text_val = part.get("text", "")
-                    if text_val:
+                    if isinstance(text_val, str) and text_val:
                         texts.append(text_val)
             elif isinstance(part, str):
                 texts.append(part)
@@ -73,9 +78,9 @@ def _extract_text(msg: dict) -> str:
     return ""
 
 
-def parse_transcript(path: Path) -> list[dict]:
+def parse_transcript(path: Path) -> list[TranscriptMessage]:
     """JONLファイルをパースし、user/assistantメッセージのみ抽出する"""
-    messages: list[dict] = []
+    messages: list[TranscriptMessage] = []
     # 事前フィルタ: JSONパース前に文字列レベルで不要な行をスキップ
     # 会話に必要な type は "user", "human", "assistant" のみ
     _prefixes = ('"type":"user"', '"type":"assistant"', '"type":"human"',
@@ -92,9 +97,12 @@ def parse_transcript(path: Path) -> list[dict]:
                 msg = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            msg_type = msg.get("type", "")
-            if msg_type in ALLOWED_TYPES:
-                messages.append(msg)
+            if not isinstance(msg, dict):
+                continue
+            normalized_msg = {str(key): value for key, value in msg.items()}
+            msg_type = normalized_msg.get("type", "")
+            if isinstance(msg_type, str) and msg_type in ALLOWED_TYPES:
+                messages.append(normalized_msg)
     return messages
 
 
@@ -130,26 +138,26 @@ def chunk_transcript(
     chunks: list[Chunk] = []
     user_parts: list[str] = []  # 連続user発話を蓄積
     prev_chunk: Chunk | None = None  # 直前のチャンク（短文マージ用）
-    trunc = lambda t: _truncate(t, max_chars)  # noqa: E731
 
     for msg in messages:
-        msg_type = msg.get("type", "")
+        msg_type_obj = msg.get("type", "")
+        msg_type = msg_type_obj if isinstance(msg_type_obj, str) else ""
         text = _extract_text(msg)
 
         if msg_type in ("human", "user"):
             if text and not any(text.lstrip().startswith(p) for p in _NOISE_PREFIXES):
-                user_parts.append(trunc(text))
+                user_parts.append(_truncate(text, max_chars))
         elif msg_type == "assistant" and user_parts:
             if not text:
                 continue
 
-            assistant_text = trunc(text)
+            assistant_text = _truncate(text, max_chars)
             user_combined = "\n".join(user_parts)
 
             # 短い追撃発話は直前チャンクにマージ
             if _is_short_phatic(user_combined) and prev_chunk is not None:
                 user_with_context = f"{prev_chunk.role_user}\n{user_combined}"
-                user_with_context = trunc(user_with_context)
+                user_with_context = _truncate(user_with_context, max_chars)
                 content = f"{user_with_context}\n{assistant_text}"
                 if len(content) >= min_chars:
                     new_chunk = Chunk(

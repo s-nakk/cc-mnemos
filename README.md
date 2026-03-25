@@ -17,7 +17,7 @@ All data stays local — no external APIs, no cloud storage. Embeddings are gene
 ## Features
 
 - Hybrid search: FTS5 trigram full-text search + vector similarity search, fused with weighted Reciprocal Rank Fusion (RRF)
-- Auto-tagging: 2-stage tagging (keyword regex + embedding cosine similarity) with categories like `ui-ux`, `coding-style`, `architecture`, `debug`, `config`, `decision`
+- Auto-tagging: keyword regex-based tagging with categories like `ui-ux`, `coding-style`, `architecture`, `debug`, `config`, `decision`
 - Smart chunking: Q&A pair extraction with consecutive message accumulation and short phatic reply merging
 - Cross-project knowledge: memories from all projects are searchable, enabling knowledge transfer
 - GPU acceleration: CUDA / MPS auto-detection for fast embedding generation
@@ -41,12 +41,17 @@ pip install cc-mnemos
 # 1. Download the embedding model and initialize the database
 cc-mnemos setup
 
-# 2. Register hooks and MCP server in Claude Code settings
+# 2. Register hooks and the MCP server in Claude Code
 cc-mnemos init
 
 # 3. (Optional) Import existing Claude Code session history
 cc-mnemos init --import-history
 ```
+
+`cc-mnemos init` updates:
+- `~/.claude/settings.json` for hooks
+- `~/.claude.json` for the `cc-mnemos` MCP server
+- `~/.claude/CLAUDE.md` for memory-search guidance
 
 After setup, cc-mnemos works automatically:
 - Session end → conversation is chunked, tagged, embedded, and stored
@@ -133,7 +138,7 @@ cc-mnemos は Claude Code に長期記憶を与えるシステムです。
 ## 主な機能
 
 - ハイブリッド検索: FTS5 trigram 全文検索 + ベクトル類似度検索を重み付き RRF で統合
-- 自動タグ付け: キーワード正規表現 + 埋め込みコサイン類似度の 2 段階タグ付け (`ui-ux`, `coding-style`, `architecture`, `debug`, `config`, `decision`)
+- 自動タグ付け: キーワード正規表現ベースのタグ付け (`ui-ux`, `coding-style`, `architecture`, `debug`, `config`, `decision`)
 - スマートチャンキング: Q&A ペア抽出、連続発話の蓄積、短い追撃発話のマージ
 - プロジェクト横断検索: 全プロジェクトの記憶を横断検索し、知見を活用
 - GPU 高速化: CUDA / MPS 自動検出で高速な埋め込み生成
@@ -157,12 +162,17 @@ pip install cc-mnemos
 # 1. 埋め込みモデルのダウンロードと DB 初期化
 cc-mnemos setup
 
-# 2. Claude Code の settings.json にフックと MCP サーバーを登録
+# 2. Claude Code にフックと MCP サーバーを登録
 cc-mnemos init
 
 # 3. (任意) 既存のセッション履歴をインポート
 cc-mnemos init --import-history
 ```
+
+`cc-mnemos init` は以下を更新します:
+- `~/.claude/settings.json`: hooks
+- `~/.claude.json`: `cc-mnemos` MCP サーバー
+- `~/.claude/CLAUDE.md`: 記憶検索ルール
 
 セットアップ後は自動で動作します:
 - セッション終了 → 会話がチャンク分割・タグ付け・ベクトル化されて保存

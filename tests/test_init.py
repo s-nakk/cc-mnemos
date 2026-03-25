@@ -70,6 +70,42 @@ class TestInit:
         assert "other" in mcp_config["mcpServers"]
         assert "cc-mnemos" in mcp_config["mcpServers"]
 
+    def test_merges_existing_hooks_in_same_event(self, tmp_path: Path) -> None:
+        existing_settings = {
+            "hooks": {
+                "Stop": [
+                    {
+                        "matcher": "",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "custom-stop-command",
+                                "timeout": 15,
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text(json.dumps(existing_settings))
+        mcp_config_path = tmp_path / ".claude.json"
+        mcp_config_path.write_text("{}")
+        claude_md_path = tmp_path / "CLAUDE.md"
+        claude_md_path.write_text("")
+
+        run_init(
+            settings_path=settings_path,
+            claude_md_path=claude_md_path,
+            mcp_config_path=mcp_config_path,
+        )
+
+        settings = json.loads(settings_path.read_text())
+        stop_hooks = settings["hooks"]["Stop"][0]["hooks"]
+        commands = [hook["command"] for hook in stop_hooks]
+        assert "custom-stop-command" in commands
+        assert any("cc-mnemos" in command and command.endswith(" memorize") for command in commands)
+
     def test_skips_claude_md_if_already_present(self, tmp_path: Path) -> None:
         settings_path = tmp_path / "settings.json"
         settings_path.write_text("{}")

@@ -4,13 +4,24 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
+from typing import BinaryIO, Protocol, cast
 
-try:
-    import tomllib  # Python 3.11+
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib  # type: ignore[no-redef]  # Python 3.10
+
+class _TomlModule(Protocol):
+    def load(self, fp: BinaryIO, /) -> dict[str, object]:
+        ...
+
+
+def _load_toml_module() -> _TomlModule:
+    module_name = "tomllib" if sys.version_info >= (3, 11) else "tomli"
+    return cast(_TomlModule, import_module(module_name))
+
+
+_TOML_MODULE = _load_toml_module()
 
 
 # ---------------------------------------------------------------------------
@@ -181,103 +192,131 @@ class Config:
             **raw_sections: ``embedding``, ``search``, ``chunking``,
                 ``general``, ``tags``, ``projects`` などのセクション辞書
         """
-        self._raw: dict[str, object] = dict(raw_sections)
+        self._raw: dict[str, dict[str, object]] = {
+            section_name: dict(section_values)
+            for section_name, section_values in raw_sections.items()
+        }
 
         # 環境変数オーバーライド: data_dir
         env_data_dir = os.environ.get("CC_MNEMOS_DATA_DIR")
         if env_data_dir:
-            general = dict(self._raw.get("general", {}))  # type: ignore[arg-type]
+            general = dict(self._section("general"))
             general["data_dir"] = env_data_dir
             self._raw["general"] = general
+
+    def _section(self, name: str) -> dict[str, object]:
+        return self._raw.get(name, {})
+
+    def _get_str(self, section: str, key: str, default: str) -> str:
+        return str(self._section(section).get(key, default))
+
+    def _get_int(self, section: str, key: str, default: int) -> int:
+        value = self._section(section).get(key, default)
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float, str)):
+            return int(value)
+        return default
+
+    def _get_float(self, section: str, key: str, default: float) -> float:
+        value = self._section(section).get(key, default)
+        if isinstance(value, bool):
+            return float(value)
+        if isinstance(value, (int, float, str)):
+            return float(value)
+        return default
+
+    @staticmethod
+    def _as_str_list(value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return []
 
     # --- Embedding ---
     @property
     def embedding_model(self) -> str:
         """埋め込みモデル名を返す"""
-        return str(self._raw.get("embedding", {}).get("model", "cl-nagoya/ruri-v3-310m"))  # type: ignore[union-attr]
+        return self._get_str("embedding", "model", "cl-nagoya/ruri-v3-310m")
 
     @property
     def embedding_dimension(self) -> int:
         """埋め込みベクトルの次元数を返す"""
-        return int(self._raw.get("embedding", {}).get("dimension", 768))  # type: ignore[union-attr]
+        return self._get_int("embedding", "dimension", 768)
 
     @property
     def embedding_batch_size(self) -> int:
         """埋め込みバッチサイズを返す"""
-        return int(self._raw.get("embedding", {}).get("batch_size", 32))  # type: ignore[union-attr]
+        return self._get_int("embedding", "batch_size", 32)
 
     # --- Search ---
     @property
     def rrf_k(self) -> int:
         """RRF の k パラメータを返す"""
-        return int(self._raw.get("search", {}).get("rrf_k", 60))  # type: ignore[union-attr]
+        return self._get_int("search", "rrf_k", 60)
 
     @property
     def time_decay_half_life_days(self) -> int:
         """時間減衰の半減期(日)を返す"""
-        return int(self._raw.get("search", {}).get("time_decay_half_life_days", 180))  # type: ignore[union-attr]
+        return self._get_int("search", "time_decay_half_life_days", 180)
 
     @property
     def fts_weight(self) -> float:
         """RRFにおけるFTSスコアの重みを返す"""
-        return float(self._raw.get("search", {}).get("fts_weight", 2.0))  # type: ignore[union-attr]
+        return self._get_float("search", "fts_weight", 2.0)
 
     @property
     def vector_weight(self) -> float:
         """RRFにおけるベクトルスコアの重みを返す"""
-        return float(self._raw.get("search", {}).get("vector_weight", 0.75))  # type: ignore[union-attr]
+        return self._get_float("search", "vector_weight", 0.75)
 
     @property
     def default_search_limit(self) -> int:
         """検索結果のデフォルト上限を返す"""
-        return int(self._raw.get("search", {}).get("default_search_limit", 10))  # type: ignore[union-attr]
+        return self._get_int("search", "default_search_limit", 10)
 
     # --- Chunking ---
     @property
     def max_chunk_chars(self) -> int:
         """チャンクの最大文字数を返す"""
-        return int(self._raw.get("chunking", {}).get("max_chunk_chars", 1500))  # type: ignore[union-attr]
+        return self._get_int("chunking", "max_chunk_chars", 1500)
 
     @property
     def min_chunk_chars(self) -> int:
         """チャンクの最小文字数を返す"""
-        return int(self._raw.get("chunking", {}).get("min_chunk_chars", 20))  # type: ignore[union-attr]
+        return self._get_int("chunking", "min_chunk_chars", 20)
 
     # --- Maintenance ---
     @property
     def max_chunk_age_days(self) -> int:
         """チャンクの最大保持日数を返す"""
-        return int(self._raw.get("maintenance", {}).get("max_chunk_age_days", 365))  # type: ignore[union-attr]
+        return self._get_int("maintenance", "max_chunk_age_days", 365)
 
     @property
     def max_db_size_mb(self) -> int:
         """データベースの最大サイズ(MB)を返す"""
-        return int(self._raw.get("maintenance", {}).get("max_db_size_mb", 500))  # type: ignore[union-attr]
+        return self._get_int("maintenance", "max_db_size_mb", 500)
 
     @property
     def vacuum_interval_days(self) -> int:
         """VACUUM の実行間隔(日)を返す"""
-        return int(self._raw.get("maintenance", {}).get("vacuum_interval_days", 30))  # type: ignore[union-attr]
+        return self._get_int("maintenance", "vacuum_interval_days", 30)
 
     # --- Misc ---
     @property
     def log_level(self) -> str:
         """ログレベルを返す"""
-        return str(self._raw.get("general", {}).get("log_level", "INFO"))  # type: ignore[union-attr]
+        return self._get_str("general", "log_level", "INFO")
 
     @property
     def project_mapping(self) -> dict[str, str]:
         """プロジェクトパスとプロジェクト名のマッピングを返す"""
-        raw = self._raw.get("projects", {})
-        if isinstance(raw, dict):
-            return {str(k): str(v) for k, v in raw.items()}
-        return {}
+        return {str(k): str(v) for k, v in self._section("projects").items()}
 
     # --- Paths ---
     @property
     def data_dir(self) -> Path:
         """データディレクトリのパスを返す"""
-        general = self._raw.get("general", {})
+        general = self._section("general")
         if isinstance(general, dict) and "data_dir" in general:
             return Path(str(general["data_dir"]))
         return get_data_dir()
@@ -285,7 +324,7 @@ class Config:
     @property
     def db_path(self) -> Path:
         """SQLite データベースファイルのパスを返す"""
-        general = self._raw.get("general", {})
+        general = self._section("general")
         if isinstance(general, dict) and "db_path" in general:
             return Path(str(general["db_path"]))
         return self.data_dir / "memories.db"
@@ -295,15 +334,13 @@ class Config:
     def tag_rules(self) -> dict[str, TagRule]:
         """タグルールの辞書を返す"""
         rules = dict(DEFAULT_TAG_RULES)
-        raw_tags = self._raw.get("tags", {})
-        if isinstance(raw_tags, dict):
-            for tag_name, tag_def in raw_tags.items():
-                if isinstance(tag_def, dict):
-                    rules[str(tag_name)] = TagRule(
-                        keywords=list(tag_def.get("keywords", [])),
-                        threshold=int(tag_def.get("threshold", 1)),
-                        prototype=str(tag_def.get("prototype", "")),
-                    )
+        for tag_name, tag_def in self._section("tags").items():
+            if isinstance(tag_def, Mapping):
+                rules[str(tag_name)] = TagRule(
+                    keywords=self._as_str_list(tag_def.get("keywords", [])),
+                    threshold=int(tag_def.get("threshold", 1)),
+                    prototype=str(tag_def.get("prototype", "")),
+                )
         return rules
 
     @classmethod
@@ -317,8 +354,13 @@ class Config:
             読み込んだ設定を反映した Config インスタンス
         """
         with open(path, "rb") as f:
-            data = tomllib.load(f)
-        return cls(**data)
+            loaded = _TOML_MODULE.load(f)
+        sections = {
+            str(section_name): dict(section_values)
+            for section_name, section_values in loaded.items()
+            if isinstance(section_values, Mapping)
+        }
+        return cls(**sections)
 
     @classmethod
     def load(cls) -> Config:

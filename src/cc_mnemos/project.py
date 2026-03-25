@@ -40,10 +40,13 @@ def infer_project_name(cwd: str, config: Config) -> str:
     3. ディレクトリのbasename
     4. "unknown" (ルートディレクトリなどbasenameが空の場合)
     """
-    cwd_normalized = cwd.replace("\\", "/")
+    cwd_normalized = cwd.replace("\\", "/").rstrip("/").casefold()
     for path_prefix, name in config.project_mapping.items():
-        prefix_normalized = path_prefix.replace("\\", "/")
-        if cwd_normalized.startswith(prefix_normalized):
+        prefix_normalized = path_prefix.replace("\\", "/").rstrip("/").casefold()
+        if (
+            cwd_normalized == prefix_normalized
+            or cwd_normalized.startswith(f"{prefix_normalized}/")
+        ):
             return name
 
     git_name = _get_git_remote(cwd)

@@ -10,6 +10,8 @@ import json
 import logging
 import math
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -209,6 +211,18 @@ class MemoryStore:
         )
         logger.info("スキーマをバージョン %d に更新しました", SCHEMA_VERSION)
 
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """複数操作を1トランザクションで実行する"""
+        try:
+            self.conn.execute("BEGIN")
+            yield
+        except Exception:
+            self.conn.rollback()
+            raise
+        else:
+            self.conn.commit()
+
     def insert_session(
         self,
         *,
@@ -218,6 +232,7 @@ class MemoryStore:
         started_at: str,
         ended_at: str | None = None,
         summary: str | None = None,
+        commit: bool = True,
     ) -> None:
         """セッションレコードを挿入する
 
@@ -231,18 +246,26 @@ class MemoryStore:
         """
         self.conn.execute(
             """
-            INSERT OR REPLACE INTO sessions(
+            INSERT INTO sessions(
                 session_id, project, work_dir, started_at, ended_at, summary
             ) VALUES(?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                project=excluded.project,
+                work_dir=excluded.work_dir,
+                started_at=excluded.started_at,
+                ended_at=excluded.ended_at,
+                summary=excluded.summary
             """,
             (session_id, project, work_dir, started_at, ended_at, summary),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def insert_chunk(
         self,
         chunk: dict[str, str | int],
         embedding: np.ndarray,
+        commit: bool = True,
     ) -> None:
         """チャンクレコードと埋め込みベクトルを挿入する
 
@@ -324,13 +347,16 @@ class MemoryStore:
                     (int_rowid, embedding_bytes),
                 )
 
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def fts_search(
         self,
         query: str,
         *,
         limit: int = 10,
+        tags: list[str] | None = None,
+        project: str | None = None,
     ) -> list[dict[str, str | int | float]]:
         """FTS5全文検索を実行する
 
@@ -348,60 +374,40 @@ class MemoryStore:
         long_tokens, short_tokens = self._split_query_tokens(query)
 
         results: list[dict[str, str | int | float]] = []
+        fetch_limit = limit if tags is None else self._count_candidate_chunks(project=project)
+        if fetch_limit <= 0:
+            return []
 
         # FTS5検索 (3文字以上のトークン)
         if long_tokens:
             # AND結合で検索
             and_query = " AND ".join(f'"{t}"' for t in long_tokens)
-            rows = self.conn.execute(
-                """
-                SELECT c.*, rank
-                FROM chunks_fts f
-                JOIN chunks c ON c.id = f.id
-                WHERE chunks_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (and_query, limit),
-            ).fetchall()
+            rows = self._run_fts_query(and_query, fetch_limit=fetch_limit, project=project)
             results = [dict(row) for row in rows]
 
             # AND結合で0件の場合はOR結合にフォールバック
             if not results and len(long_tokens) > 1:
                 or_query = " OR ".join(f'"{t}"' for t in long_tokens)
-                rows = self.conn.execute(
-                    """
-                    SELECT c.*, rank
-                    FROM chunks_fts f
-                    JOIN chunks c ON c.id = f.id
-                    WHERE chunks_fts MATCH ?
-                    ORDER BY rank
-                    LIMIT ?
-                    """,
-                    (or_query, limit),
-                ).fetchall()
+                rows = self._run_fts_query(or_query, fetch_limit=fetch_limit, project=project)
                 results = [dict(row) for row in rows]
 
         # 短語のLIKEフォールバック (3文字未満)
         if short_tokens:
             seen_ids = {str(r["id"]) for r in results}
             for token in short_tokens:
-                rows = self.conn.execute(
-                    """
-                    SELECT c.*, 0 as rank
-                    FROM chunks c
-                    WHERE c.content LIKE ?
-                    LIMIT ?
-                    """,
-                    (f"%{token}%", limit),
-                ).fetchall()
+                rows = self._run_like_query(
+                    token,
+                    fetch_limit=fetch_limit,
+                    project=project,
+                )
                 for row in rows:
                     d = dict(row)
                     if str(d["id"]) not in seen_ids:
                         results.append(d)
                         seen_ids.add(str(d["id"]))
 
-        return results[:limit]
+        filtered = self._filter_results(results, tags=tags)
+        return filtered[:limit]
 
     @staticmethod
     def _split_query_tokens(query: str) -> tuple[list[str], list[str]]:
@@ -438,6 +444,8 @@ class MemoryStore:
         query_embedding: np.ndarray,
         *,
         limit: int = 10,
+        tags: list[str] | None = None,
+        project: str | None = None,
     ) -> list[dict[str, str | int | float]]:
         """ベクトル類似度検索を実行する
 
@@ -448,9 +456,14 @@ class MemoryStore:
         Returns:
             類似度の高いチャンクのリスト (distance付き)
         """
-        if self._use_sqlite_vec:
+        if self._use_sqlite_vec and tags is None and project is None:
             return self._sqlite_vec_search(query_embedding, limit=limit)
-        return self._numpy_vector_search(query_embedding, limit=limit)
+        return self._numpy_vector_search(
+            query_embedding,
+            limit=limit,
+            tags=tags,
+            project=project,
+        )
 
     def _sqlite_vec_search(
         self,
@@ -490,6 +503,8 @@ class MemoryStore:
         query_embedding: np.ndarray,
         *,
         limit: int = 10,
+        tags: list[str] | None = None,
+        project: str | None = None,
     ) -> list[dict[str, str | int | float]]:
         """numpyによるコサイン類似度ベクトル検索(フォールバック)
 
@@ -500,9 +515,18 @@ class MemoryStore:
         Returns:
             類似度の高いチャンクのリスト (distance付き)
         """
-        rows = self.conn.execute(
-            "SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL"
-        ).fetchall()
+        query = """
+            SELECT c.id, c.session_id, c.role_user, c.role_assistant,
+                   c.content, c.tags, c.created_at, c.token_count, c.embedding
+            FROM chunks c
+            JOIN sessions s ON s.session_id = c.session_id
+            WHERE c.embedding IS NOT NULL
+        """
+        params: list[str] = []
+        if project is not None:
+            query += " AND s.project = ?"
+            params.append(project)
+        rows = self.conn.execute(query, params).fetchall()
 
         if not rows:
             return []
@@ -514,13 +538,15 @@ class MemoryStore:
             return []
         query_normalized = query_vec / query_norm
 
-        scored: list[tuple[str, float]] = []
+        scored: list[tuple[float, dict[str, str | int | float]]] = []
         for row in rows:
-            chunk_id = row[0]
-            emb_blob = row[1]
+            row_data = dict(row)
+            if not self._matches_tags(row_data, tags):
+                continue
+            emb_blob = row_data.get("embedding")
             if emb_blob is None:
                 continue
-            vec = np.frombuffer(emb_blob, dtype=np.float32)
+            vec = np.frombuffer(bytes(emb_blob), dtype=np.float32)
             if len(vec) != dim:
                 continue
             vec_norm = np.linalg.norm(vec)
@@ -529,23 +555,13 @@ class MemoryStore:
             cosine_sim = float(np.dot(query_normalized, vec / vec_norm))
             # コサイン距離 (1 - similarity) に変換してsqlite-vecと互換にする
             distance = 1.0 - cosine_sim
-            scored.append((chunk_id, distance))
+            row_data["distance"] = distance
+            row_data.pop("embedding", None)
+            scored.append((distance, row_data))
 
         # 距離昇順(= 類似度降順)でソート
-        scored.sort(key=lambda x: x[1])
-        top_ids = scored[:limit]
-
-        results: list[dict[str, str | int | float]] = []
-        for chunk_id, distance in top_ids:
-            row = self.conn.execute(
-                "SELECT * FROM chunks WHERE id = ?", (chunk_id,)
-            ).fetchone()
-            if row:
-                d = dict(row)
-                d["distance"] = distance
-                results.append(d)
-
-        return results
+        scored.sort(key=lambda x: x[0])
+        return [row_data for _, row_data in scored[:limit]]
 
     def hybrid_search(
         self,
@@ -580,10 +596,20 @@ class MemoryStore:
         expanded_limit = limit * 5
 
         # FTS検索
-        fts_results = self.fts_search(query_text, limit=expanded_limit)
+        fts_results = self.fts_search(
+            query_text,
+            limit=expanded_limit,
+            tags=tags,
+            project=project,
+        )
 
         # ベクトル検索
-        vec_results = self.vector_search(query_embedding, limit=expanded_limit)
+        vec_results = self.vector_search(
+            query_embedding,
+            limit=expanded_limit,
+            tags=tags,
+            project=project,
+        )
 
         # 重み付きRRFスコア計算
         rrf_scores: dict[str, float] = {}
@@ -619,32 +645,7 @@ class MemoryStore:
             decay = math.pow(0.5, age_days / half_life)
             rrf_scores[chunk_id] = base_score * decay
 
-        # フィルタリング
-        filtered_ids: list[str] = []
-        for chunk_id in rrf_scores:
-            data = chunk_data[chunk_id]
-
-            # タグフィルタ
-            if tags:
-                chunk_tags_str = str(data.get("tags", "[]"))
-                try:
-                    chunk_tags = json.loads(chunk_tags_str)
-                except json.JSONDecodeError:
-                    chunk_tags = []
-                if not any(t in chunk_tags for t in tags):
-                    continue
-
-            # プロジェクトフィルタ
-            if project:
-                session_id = str(data.get("session_id", ""))
-                session = self.conn.execute(
-                    "SELECT project FROM sessions WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()
-                if session is None or session[0] != project:
-                    continue
-
-            filtered_ids.append(chunk_id)
+        filtered_ids = list(rrf_scores)
 
         # スコア降順ソート
         filtered_ids.sort(key=lambda cid: rrf_scores[cid], reverse=True)
@@ -659,6 +660,88 @@ class MemoryStore:
             results.append(data)
 
         return results
+
+    def _run_fts_query(
+        self,
+        match_query: str,
+        *,
+        fetch_limit: int,
+        project: str | None,
+    ) -> list[sqlite3.Row]:
+        query = """
+            SELECT c.*, rank
+            FROM chunks_fts f
+            JOIN chunks c ON c.id = f.id
+            JOIN sessions s ON s.session_id = c.session_id
+            WHERE chunks_fts MATCH ?
+        """
+        params: list[str | int] = [match_query]
+        if project is not None:
+            query += " AND s.project = ?"
+            params.append(project)
+        query += " ORDER BY rank LIMIT ?"
+        params.append(fetch_limit)
+        return self.conn.execute(query, params).fetchall()
+
+    def _run_like_query(
+        self,
+        token: str,
+        *,
+        fetch_limit: int,
+        project: str | None,
+    ) -> list[sqlite3.Row]:
+        query = """
+            SELECT c.*, 0 as rank
+            FROM chunks c
+            JOIN sessions s ON s.session_id = c.session_id
+            WHERE c.content LIKE ?
+        """
+        params: list[str | int] = [f"%{token}%"]
+        if project is not None:
+            query += " AND s.project = ?"
+            params.append(project)
+        query += " LIMIT ?"
+        params.append(fetch_limit)
+        return self.conn.execute(query, params).fetchall()
+
+    def _count_candidate_chunks(self, *, project: str | None) -> int:
+        if project is None:
+            return int(self.conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
+        return int(
+            self.conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM chunks c
+                JOIN sessions s ON s.session_id = c.session_id
+                WHERE s.project = ?
+                """,
+                (project,),
+            ).fetchone()[0]
+        )
+
+    @staticmethod
+    def _filter_results(
+        results: list[dict[str, str | int | float]],
+        *,
+        tags: list[str] | None,
+    ) -> list[dict[str, str | int | float]]:
+        if tags is None:
+            return results
+        return [result for result in results if MemoryStore._matches_tags(result, tags)]
+
+    @staticmethod
+    def _matches_tags(
+        result: dict[str, str | int | float],
+        tags: list[str] | None,
+    ) -> bool:
+        if tags is None:
+            return True
+        tags_raw = str(result.get("tags", "[]"))
+        try:
+            result_tags = json.loads(tags_raw)
+        except json.JSONDecodeError:
+            return False
+        return any(tag in result_tags for tag in tags)
 
     def get_stats(self) -> dict[str, int | dict[str, int]]:
         """ストレージの統計情報を取得する

@@ -10,12 +10,24 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+HookCommand = TypedDict(
+    "HookCommand",
+    {"type": str, "command": str, "timeout": int, "async": bool},
+    total=False,
+)
+
+
+class HookEntry(TypedDict):
+    matcher: str
+    hooks: list[HookCommand]
 
 # ---------------------------------------------------------------------------
 # CLAUDE.md に追記するテキスト
@@ -35,7 +47,7 @@ _CLAUDE_MD_SECTION = """
 # ---------------------------------------------------------------------------
 # settings.json に追加する設定
 # ---------------------------------------------------------------------------
-_HOOKS_CONFIG: dict[str, list[dict[str, object]]] = {
+_HOOKS_CONFIG: dict[str, list[HookEntry]] = {
     "Stop": [
         {
             "matcher": "",
@@ -176,14 +188,58 @@ def _update_settings(settings_path: Path) -> None:
     resolved_hooks = copy.deepcopy(_HOOKS_CONFIG)
     for entries in resolved_hooks.values():
         for entry in entries:
-            for hook in entry.get("hooks", []):
+            for hook in entry["hooks"]:
                 cmd = hook.get("command", "")
                 if isinstance(cmd, str):
                     hook["command"] = cmd.replace("cc-mnemos", cmd_path, 1)
 
     for event_name, event_entries in resolved_hooks.items():
-        # 新規も既存も常に上書き（パス更新のため）
-        hooks[event_name] = event_entries
+        existing_entries = hooks.get(event_name, [])
+        if not isinstance(existing_entries, list):
+            existing_entries = []
+        hooks[event_name] = existing_entries
+
+        for event_entry in event_entries:
+            matcher = event_entry.get("matcher", "")
+            target_entry: dict[str, object] | None = None
+            for existing_entry in existing_entries:
+                if (
+                    isinstance(existing_entry, dict)
+                    and existing_entry.get("matcher", "") == matcher
+                    and isinstance(existing_entry.get("hooks"), list)
+                ):
+                    target_entry = existing_entry
+                    break
+            if target_entry is None:
+                target_entry = {"matcher": matcher, "hooks": []}
+                existing_entries.append(target_entry)
+
+            target_hooks = target_entry.get("hooks", [])
+            if not isinstance(target_hooks, list):
+                target_hooks = []
+                target_entry["hooks"] = target_hooks
+
+            for desired_hook in event_entry["hooks"]:
+                desired_command = desired_hook.get("command", "")
+                if not isinstance(desired_command, str):
+                    continue
+
+                hook_replaced = False
+                for index, existing_hook in enumerate(target_hooks):
+                    if not isinstance(existing_hook, dict):
+                        continue
+                    existing_command = existing_hook.get("command", "")
+                    if (
+                        isinstance(existing_command, str)
+                        and "cc-mnemos" in existing_command
+                        and existing_command.split()[-1] == desired_command.split()[-1]
+                    ):
+                        target_hooks[index] = desired_hook
+                        hook_replaced = True
+                        break
+
+                if not hook_replaced:
+                    target_hooks.append(desired_hook)
 
     # 書き戻し
     settings_path.write_text(

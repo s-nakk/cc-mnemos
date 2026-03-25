@@ -122,6 +122,90 @@ class TestHybridSearch:
         )
         assert len(results) == 2
 
+    def test_project_filter_retrieves_relevant_result_beyond_unfiltered_top_k(
+        self, store: MemoryStore
+    ) -> None:
+        query_embedding = np.ones(768, dtype=np.float32)
+        now = datetime.now(tz=timezone.utc).isoformat()
+
+        for i in range(20):
+            session_id = make_session_id()
+            store.insert_session(
+                session_id=session_id,
+                project="other-project",
+                work_dir="/tmp/other",
+                started_at=now,
+            )
+            chunk = make_chunk(session_id, role_user=f"共通クエリ{i}")
+            store.insert_chunk(chunk, query_embedding)
+
+        target_session = make_session_id()
+        store.insert_session(
+            session_id=target_session,
+            project="target-project",
+            work_dir="/tmp/target",
+            started_at=now,
+        )
+        target_embedding = np.concatenate(
+            [np.ones(10, dtype=np.float32), np.zeros(758, dtype=np.float32)]
+        )
+        target_chunk = make_chunk(target_session, role_user="共通クエリ target")
+        store.insert_chunk(target_chunk, target_embedding)
+
+        results = store.hybrid_search(
+            query_text="共通クエリ",
+            query_embedding=query_embedding,
+            project="target-project",
+            limit=1,
+        )
+
+        assert len(results) == 1
+        assert results[0]["session_id"] == target_session
+
+    def test_tag_filter_retrieves_relevant_result_beyond_unfiltered_top_k(
+        self, store: MemoryStore
+    ) -> None:
+        query_embedding = np.ones(768, dtype=np.float32)
+        now = datetime.now(tz=timezone.utc).isoformat()
+
+        for i in range(20):
+            session_id = make_session_id()
+            store.insert_session(
+                session_id=session_id,
+                project="shared-project",
+                work_dir="/tmp/shared",
+                started_at=now,
+            )
+            chunk = make_chunk(session_id, role_user=f"タグ検索{i}", tags=["general"])
+            store.insert_chunk(chunk, query_embedding)
+
+        tagged_session = make_session_id()
+        store.insert_session(
+            session_id=tagged_session,
+            project="shared-project",
+            work_dir="/tmp/shared",
+            started_at=now,
+        )
+        tagged_embedding = np.concatenate(
+            [np.ones(10, dtype=np.float32), np.zeros(758, dtype=np.float32)]
+        )
+        tagged_chunk = make_chunk(
+            tagged_session,
+            role_user="タグ検索 target",
+            tags=["ui-ux"],
+        )
+        store.insert_chunk(tagged_chunk, tagged_embedding)
+
+        results = store.hybrid_search(
+            query_text="タグ検索",
+            query_embedding=query_embedding,
+            tags=["ui-ux"],
+            limit=1,
+        )
+
+        assert len(results) == 1
+        assert "ui-ux" in json.loads(results[0]["tags"])
+
 
 class TestStats:
     def test_get_stats(self, store: MemoryStore) -> None:

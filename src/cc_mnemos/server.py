@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from functools import partial
+from typing import Protocol, TypeVar, cast
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -19,6 +21,27 @@ from cc_mnemos.config import Config
 from cc_mnemos.store import MemoryStore
 
 logger = logging.getLogger(__name__)
+JsonObject = dict[str, object]
+HandlerT = TypeVar("HandlerT", bound=Callable[..., object])
+
+
+class MCPServerProtocol(Protocol):
+    def list_tools(self) -> Callable[[HandlerT], HandlerT]:
+        ...
+
+    def call_tool(self) -> Callable[[HandlerT], HandlerT]:
+        ...
+
+    async def run(
+        self,
+        read_stream: object,
+        write_stream: object,
+        initialization_options: object,
+    ) -> None:
+        ...
+
+    def create_initialization_options(self) -> object:
+        ...
 
 # ---------------------------------------------------------------------------
 # グローバル Config (遅延ロード)
@@ -55,6 +78,33 @@ def _list_projects(config: Config | None = None) -> list[str]:
         return store.list_projects()
     finally:
         store.close()
+
+
+def _decode_search_results(payload: str) -> list[JsonObject]:
+    raw = json.loads(payload)
+    if not isinstance(raw, list):
+        return []
+    results: list[JsonObject] = []
+    for item in raw:
+        if isinstance(item, dict):
+            results.append({str(key): value for key, value in item.items()})
+    return results
+
+
+def _coerce_tags(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    return [str(tag) for tag in value]
+
+
+def _coerce_project(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _coerce_limit(value: object, default: int = 10) -> int:
+    return value if isinstance(value, int) else default
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +161,7 @@ def _search_memory_sync(
     tags: list[str] | None = None,
     project: str | None = None,
     limit: int = 10,
-) -> list[dict]:
+) -> list[JsonObject]:
     """デーモンワーカー経由でハイブリッド検索を実行する"""
     import socket
 
@@ -135,7 +185,7 @@ def _search_memory_sync(
                     break
                 chunks.append(data)
             response = b"".join(chunks).decode("utf-8")
-            return json.loads(response)
+            return _decode_search_results(response)
     except Exception:  # noqa: BLE001
         logger.exception("search worker communication failed")
         return []
@@ -144,7 +194,7 @@ def _search_memory_sync(
 # ---------------------------------------------------------------------------
 # MCP サーバー定義
 # ---------------------------------------------------------------------------
-server = Server("cc-mnemos")
+server: MCPServerProtocol = cast(MCPServerProtocol, Server("cc-mnemos"))
 
 
 @server.list_tools()
@@ -195,20 +245,22 @@ async def handle_list_tools() -> list[Tool]:
 
 
 @server.call_tool()
-async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def handle_call_tool(name: str, arguments: JsonObject) -> list[TextContent]:
     """ツール呼び出しを処理する"""
     loop = asyncio.get_running_loop()
 
     if name == "search_memory":
+        query = arguments.get("query", "")
+        query_text = query if isinstance(query, str) else ""
         # ワーカー起動をスレッドプールで実行（ブロッキング処理をイベントループから分離）
         results = await loop.run_in_executor(
             None,
             partial(
                 _search_memory_sync,
-                arguments.get("query", ""),
-                arguments.get("tags"),
-                arguments.get("project"),
-                arguments.get("limit", 10),
+                query_text,
+                _coerce_tags(arguments.get("tags")),
+                _coerce_project(arguments.get("project")),
+                _coerce_limit(arguments.get("limit", 10)),
             ),
         )
         return [TextContent(type="text", text=json.dumps(results, ensure_ascii=False))]

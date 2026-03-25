@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -10,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from cc_mnemos.batch_import import _resolve_cwd, import_history
+from cc_mnemos.batch_import import _read_session_metadata, _resolve_cwd, import_history
 from cc_mnemos.config import Config
 from cc_mnemos.store import MemoryStore
 
@@ -48,6 +49,37 @@ class TestResolveCwd:
         # ドライブレター+セパレータなしの場合
         result = _resolve_cwd("myproject")
         assert result == "myproject"
+
+
+class TestReadSessionMetadata:
+    def test_reads_cwd_and_timestamp_from_jsonl(self, tmp_path: Path) -> None:
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "cwd": "C:\\projects\\cc-mnemos",
+                            "timestamp": "2026-03-25T00:00:00Z",
+                            "message": {"content": "cc-mnemos の保存仕様について確認したいです"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "message": {"content": "保存仕様は SQLite ベースで管理されています"},
+                        }
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        cwd, timestamp = _read_session_metadata(transcript)
+
+        assert cwd == "C:\\projects\\cc-mnemos"
+        assert timestamp == "2026-03-25T00:00:00Z"
 
 
 class TestImportHistory:
@@ -170,3 +202,53 @@ class TestImportHistory:
         captured = capsys.readouterr()
         assert "Importing 1 sessions" in captured.out
         assert "Done:" in captured.out
+
+    def test_prefers_jsonl_metadata_over_directory_name(self, tmp_path: Path) -> None:
+        config = Config(general={"data_dir": str(tmp_path / "data")})
+
+        fake_home = tmp_path / "fakehome"
+        projects_dir = fake_home / ".claude" / "projects" / "C--projects-cc-mnemos"
+        projects_dir.mkdir(parents=True)
+        session_path = projects_dir / "session-001.jsonl"
+        session_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "cwd": "C:\\projects\\cc-mnemos",
+                            "timestamp": "2026-03-25T00:00:00Z",
+                            "message": {"content": "cc-mnemos の保存仕様について確認したいです"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "message": {"content": "保存仕様は SQLite ベースで管理されています"},
+                        }
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        mock_embedder = MagicMock()
+        mock_embedder.encode_documents.side_effect = _mock_encode_documents
+
+        with patch("cc_mnemos.batch_import.Path.home") as mock_home:
+            mock_home.return_value = fake_home
+            result = import_history(config, embedder=mock_embedder, verbose=False)
+
+        assert result["imported"] == 1
+
+        store = MemoryStore(config)
+        row = store.conn.execute(
+            "SELECT project, work_dir, started_at FROM sessions WHERE session_id = ?",
+            ("session-001",),
+        ).fetchone()
+        store.close()
+
+        assert row is not None
+        assert row[0] == "cc-mnemos"
+        assert row[1] == "C:\\projects\\cc-mnemos"
+        assert row[2] == "2026-03-25T00:00:00+00:00"

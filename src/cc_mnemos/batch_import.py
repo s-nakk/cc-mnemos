@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cc_mnemos.chunker import chunk_transcript
+from cc_mnemos.project import infer_project_name
 from cc_mnemos.store import MemoryStore
 from cc_mnemos.tagger import assign_tags
 
@@ -44,6 +45,37 @@ def _infer_project(cwd: str) -> str:
         if part.lower() == "projects" and i + 1 < len(parts):
             return parts[i + 1]
     return parts[-1] if parts else "unknown"
+
+
+def _read_session_metadata(path: Path) -> tuple[str | None, str | None]:
+    """JSONL先頭付近から cwd と timestamp を取得する"""
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                entry = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            cwd = entry.get("cwd")
+            timestamp = entry.get("timestamp")
+            cwd_value = str(cwd) if isinstance(cwd, str) and cwd else None
+            timestamp_value = str(timestamp) if isinstance(timestamp, str) and timestamp else None
+            if cwd_value is not None or timestamp_value is not None:
+                return cwd_value, timestamp_value
+    return None, None
+
+
+def _normalize_timestamp(timestamp: str | None) -> str | None:
+    """datetime.fromisoformat が扱いやすい ISO 文字列へ正規化する"""
+    if timestamp is None:
+        return None
+    if timestamp.endswith("Z"):
+        return f"{timestamp[:-1]}+00:00"
+    return timestamp
 
 
 def import_history(
@@ -101,51 +133,63 @@ def import_history(
     start = time.time()
 
     tag_rules = config.tag_rules
+    project_name_cache: dict[str, str] = {}
 
     for i, jsonl in enumerate(sorted(all_files)):
         try:
             rel = jsonl.relative_to(projects_dir)
             project_dir_name = rel.parts[0]
-            cwd = _resolve_cwd(project_dir_name)
+            metadata_cwd, metadata_timestamp = _read_session_metadata(jsonl)
+            cwd = metadata_cwd if metadata_cwd is not None else _resolve_cwd(project_dir_name)
 
             chunks = chunk_transcript(jsonl, config.max_chunk_chars, config.min_chunk_chars)
             if not chunks:
                 continue
 
-            project = _infer_project(cwd)
+            project = project_name_cache.get(cwd)
+            if project is None:
+                if metadata_cwd is not None:
+                    project = infer_project_name(cwd, config)
+                else:
+                    project = _infer_project(cwd)
+                project_name_cache[cwd] = project
 
-            # JONLのmtimeを使用（インポート時刻ではなく実際のセッション時刻）
-            mtime = jsonl.stat().st_mtime
-            session_time = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+            normalized_timestamp = _normalize_timestamp(metadata_timestamp)
+            if normalized_timestamp is not None:
+                session_time = normalized_timestamp
+            else:
+                mtime = jsonl.stat().st_mtime
+                session_time = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
 
-            store.insert_session(
-                session_id=jsonl.stem,
-                project=project,
-                work_dir=cwd,
-                started_at=session_time,
-                ended_at=session_time,
-            )
-
-            # バッチエンコード
-            embeddings = embedder.encode_documents([c.content for c in chunks])
-
-            for idx, chunk in enumerate(chunks):
-                tags = assign_tags(
-                    chunk.content,
-                    tag_rules,
-                    keyword_text=chunk.role_user,
+            with store.transaction():
+                store.insert_session(
+                    session_id=jsonl.stem,
+                    project=project,
+                    work_dir=cwd,
+                    started_at=session_time,
+                    ended_at=session_time,
+                    commit=False,
                 )
-                chunk_data: dict[str, str | int] = {
-                    "id": str(uuid.uuid4()),
-                    "session_id": jsonl.stem,
-                    "role_user": chunk.role_user,
-                    "role_assistant": chunk.role_assistant,
-                    "content": chunk.content,
-                    "tags": json.dumps(tags),
-                    "created_at": session_time,
-                    "token_count": len(chunk.content),
-                }
-                store.insert_chunk(chunk_data, embeddings[idx])
+
+                embeddings = embedder.encode_documents([c.content for c in chunks])
+
+                for idx, chunk in enumerate(chunks):
+                    tags = assign_tags(
+                        chunk.content,
+                        tag_rules,
+                        keyword_text=chunk.role_user,
+                    )
+                    chunk_data: dict[str, str | int] = {
+                        "id": str(uuid.uuid4()),
+                        "session_id": jsonl.stem,
+                        "role_user": chunk.role_user,
+                        "role_assistant": chunk.role_assistant,
+                        "content": chunk.content,
+                        "tags": json.dumps(tags),
+                        "created_at": session_time,
+                        "token_count": len(chunk.content),
+                    }
+                    store.insert_chunk(chunk_data, embeddings[idx], commit=False)
 
             # Embeddingテンソルを明示的に解放
             del embeddings

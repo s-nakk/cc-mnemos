@@ -89,26 +89,28 @@ def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
 
     store = MemoryStore(config)
     try:
-        store.insert_session(
-            session_id=session_id,
-            project=project_name,
-            work_dir=cwd,
-            started_at=now,
-        )
+        with store.transaction():
+            store.insert_session(
+                session_id=session_id,
+                project=project_name,
+                work_dir=cwd,
+                started_at=now,
+                commit=False,
+            )
 
-        for i, c in enumerate(chunks):
-            chunk_id = str(uuid.uuid4())
-            chunk_data: dict[str, str | int] = {
-                "id": chunk_id,
-                "session_id": session_id,
-                "role_user": c.role_user,
-                "role_assistant": c.role_assistant,
-                "content": c.content,
-                "tags": json.dumps(chunk_tags_list[i]),
-                "created_at": now,
-                "token_count": len(c.content),
-            }
-            store.insert_chunk(chunk_data, embeddings[i])
+            for i, c in enumerate(chunks):
+                chunk_id = str(uuid.uuid4())
+                chunk_data: dict[str, str | int] = {
+                    "id": chunk_id,
+                    "session_id": session_id,
+                    "role_user": c.role_user,
+                    "role_assistant": c.role_assistant,
+                    "content": c.content,
+                    "tags": json.dumps(chunk_tags_list[i]),
+                    "created_at": now,
+                    "token_count": len(c.content),
+                }
+                store.insert_chunk(chunk_data, embeddings[i], commit=False)
 
         logger.info(
             "セッション %s: %d チャンクを保存しました",

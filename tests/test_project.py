@@ -18,6 +18,12 @@ class TestInferProjectName:
         result = infer_project_name("C:/projects/resitoly/frontend", config)
         assert result == "resitoly"
 
+    def test_config_override_respects_path_boundaries(self) -> None:
+        config = Config(projects={"C:/projects/resitoly": "resitoly"})
+        with patch("cc_mnemos.project._get_git_remote", return_value=None):
+            result = infer_project_name("C:/projects/resitoly-backend", config)
+        assert result == "resitoly-backend"
+
     def test_git_remote(self, tmp_path: Path) -> None:
         import subprocess
 
