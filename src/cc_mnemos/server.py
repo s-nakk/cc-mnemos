@@ -15,16 +15,17 @@ from cc_mnemos.config import Config
 from cc_mnemos.store import MemoryStore
 
 if TYPE_CHECKING:
-    pass
+    from cc_mnemos.embedder import Embedder
 
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("cc-mnemos")
 
 # ---------------------------------------------------------------------------
-# グローバル Config (遅延ロード)
+# グローバル Config / Embedder (遅延ロード・キャッシュ)
 # ---------------------------------------------------------------------------
 _global_config: Config | None = None
+_global_embedder: Embedder | None = None
 
 
 def _load_config() -> Config:
@@ -33,6 +34,16 @@ def _load_config() -> Config:
     if _global_config is None:
         _global_config = Config.load()
     return _global_config
+
+
+def _load_embedder() -> Embedder:
+    """グローバルEmbedderを遅延ロードして返す（モデルは1回だけロード）"""
+    global _global_embedder  # noqa: PLW0603
+    if _global_embedder is None:
+        from cc_mnemos.embedder import Embedder as EmbedderClass
+
+        _global_embedder = EmbedderClass(_load_config())
+    return _global_embedder
 
 
 # ---------------------------------------------------------------------------
@@ -100,10 +111,8 @@ def search_memory(
     Returns:
         スコア降順でソートされたチャンクのリスト
     """
-    from cc_mnemos.embedder import Embedder
-
     cfg = _load_config()
-    embedder = Embedder(cfg)
+    embedder = _load_embedder()
     store = MemoryStore(cfg)
     try:
         query_embedding = embedder.encode_query(query)
@@ -143,5 +152,5 @@ def list_projects() -> list[str]:
 # サーバー起動
 # ---------------------------------------------------------------------------
 def run_server() -> None:
-    """MCPサーバーを起動する"""
-    mcp.run()
+    """MCPサーバーをstdioトランスポートで起動する"""
+    mcp.run(transport="stdio")
