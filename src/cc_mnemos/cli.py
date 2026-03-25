@@ -182,10 +182,15 @@ def _update_settings(settings_path: Path) -> None:
         mcp_servers = {}
         settings["mcpServers"] = mcp_servers
 
-    # 常にパスを更新
+    # 常にパスを更新（fastmcp run経由でstdioサーバーを起動）
+    scripts_dir = str(Path(cmd_path).parent).replace("\\", "/")
+    fastmcp_path = f"{scripts_dir}/fastmcp"
+    # Windows: fastmcp.exe を探す
+    if Path(f"{scripts_dir}/fastmcp.exe").exists():
+        fastmcp_path = f"{scripts_dir}/fastmcp.exe"
     mcp_servers["cc-mnemos"] = {
-        "command": cmd_path,
-        "args": ["server"],
+        "command": fastmcp_path,
+        "args": ["run", "cc_mnemos.server:mcp", "--transport", "stdio"],
     }
 
     # 書き戻し
