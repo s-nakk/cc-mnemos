@@ -140,3 +140,23 @@ def _run_recall_impl(hook_input: dict[str, object], config: Config) -> None:
     output = format_recall_output(project_name, recent_chunks, cross_project_chunks)
     sys.stdout.write(output)
 
+    # 5. MCP search_memory用のデーモンワーカーをバックグラウンドで起動
+    import subprocess
+    import threading
+    from pathlib import Path
+
+    def _start_worker() -> None:
+        try:
+            python = sys.executable
+            worker = str(Path(__file__).parent / "_search_worker.py")
+            subprocess.Popen(
+                [python, worker, "--daemon", "19836"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    threading.Thread(target=_start_worker, daemon=True).start()
+

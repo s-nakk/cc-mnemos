@@ -9,9 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
 from functools import partial
-from typing import TYPE_CHECKING
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -20,17 +18,12 @@ from mcp.types import TextContent, Tool
 from cc_mnemos.config import Config
 from cc_mnemos.store import MemoryStore
 
-if TYPE_CHECKING:
-    from cc_mnemos.embedder import Embedder
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# グローバル Config / Embedder (遅延ロード・キャッシュ、スレッドセーフ)
+# グローバル Config (遅延ロード)
 # ---------------------------------------------------------------------------
 _global_config: Config | None = None
-_global_embedder: Embedder | None = None
-_embedder_lock = threading.Lock()
 
 
 def _load_config() -> Config:
@@ -39,19 +32,6 @@ def _load_config() -> Config:
     if _global_config is None:
         _global_config = Config.load()
     return _global_config
-
-
-def _load_embedder() -> Embedder:
-    """グローバルEmbedderを遅延ロードして返す（スレッドセーフ、モデルは1回だけロード）"""
-    global _global_embedder  # noqa: PLW0603
-    if _global_embedder is not None:
-        return _global_embedder
-    with _embedder_lock:
-        if _global_embedder is None:
-            from cc_mnemos.embedder import Embedder as EmbedderClass
-
-            _global_embedder = EmbedderClass(_load_config())
-        return _global_embedder
 
 
 # ---------------------------------------------------------------------------
@@ -80,27 +60,85 @@ def _list_projects(config: Config | None = None) -> list[str]:
 # ---------------------------------------------------------------------------
 # 同期検索の実装 (スレッドプールで実行される)
 # ---------------------------------------------------------------------------
+_WORKER_PORT = 19836
+_worker_started = False
+
+
+def _ensure_worker() -> None:
+    """検索ワーカーデーモンが起動していなければ起動する"""
+    global _worker_started  # noqa: PLW0603
+    if _worker_started:
+        return
+
+    import socket
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    # 既にリスニングしているか確認
+    try:
+        with socket.create_connection(("127.0.0.1", _WORKER_PORT), timeout=1):
+            _worker_started = True
+            return
+    except (ConnectionRefusedError, TimeoutError, OSError):
+        pass
+
+    # ワーカーを起動
+    python = sys.executable
+    worker = str(Path(__file__).parent / "_search_worker.py")
+    subprocess.Popen(
+        [python, worker, "--daemon", str(_WORKER_PORT)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    # 起動を待機（最大30秒）
+    import time
+    for _ in range(60):
+        try:
+            with socket.create_connection(("127.0.0.1", _WORKER_PORT), timeout=1):
+                _worker_started = True
+                return
+        except (ConnectionRefusedError, TimeoutError, OSError):
+            time.sleep(0.5)
+
+    logger.error("search worker failed to start within 30 seconds")
+
+
 def _search_memory_sync(
     query: str,
     tags: list[str] | None = None,
     project: str | None = None,
     limit: int = 10,
 ) -> list[dict]:
-    """ハイブリッド検索の同期実装"""
-    cfg = _load_config()
-    embedder = _load_embedder()
-    store = MemoryStore(cfg)
+    """デーモンワーカー経由でハイブリッド検索を実行する"""
+    import socket
+
+    _ensure_worker()
+
+    request = json.dumps({
+        "query": query,
+        "tags": tags,
+        "project": project,
+        "limit": limit,
+    })
+
     try:
-        query_embedding = embedder.encode_query(query)
-        return store.hybrid_search(
-            query_text=query,
-            query_embedding=query_embedding,
-            tags=tags,
-            project=project,
-            limit=limit,
-        )
-    finally:
-        store.close()
+        with socket.create_connection(("127.0.0.1", _WORKER_PORT), timeout=30) as sock:
+            sock.sendall(request.encode("utf-8") + b"\n")
+            # レスポンスを読み取り
+            chunks: list[bytes] = []
+            while True:
+                data = sock.recv(65536)
+                if not data:
+                    break
+                chunks.append(data)
+            response = b"".join(chunks).decode("utf-8")
+            return json.loads(response)
+    except Exception:  # noqa: BLE001
+        logger.exception("search worker communication failed")
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +200,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
     loop = asyncio.get_running_loop()
 
     if name == "search_memory":
+        # ワーカー起動をスレッドプールで実行（ブロッキング処理をイベントループから分離）
         results = await loop.run_in_executor(
             None,
             partial(
@@ -190,10 +229,6 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 # ---------------------------------------------------------------------------
 async def _run_server_async() -> None:
     """MCPサーバーを非同期で起動する"""
-    import threading
-
-    threading.Thread(target=_load_embedder, daemon=True).start()
-
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
