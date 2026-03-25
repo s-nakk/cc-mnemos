@@ -139,3 +139,4 @@ def _run_recall_impl(hook_input: dict[str, object], config: Config) -> None:
     # 4. フォーマットして標準出力へ
     output = format_recall_output(project_name, recent_chunks, cross_project_chunks)
     sys.stdout.write(output)
+

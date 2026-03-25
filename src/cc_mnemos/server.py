@@ -152,7 +152,13 @@ def list_projects() -> list[str]:
 # サーバー起動
 # ---------------------------------------------------------------------------
 def run_server() -> None:
-    """MCPサーバーをstdioトランスポートで起動する"""
+    """MCPサーバーをstdioトランスポートで起動する
+
+    起動時にバックグラウンドでEmbedderをプリロードし、
+    初回のsearch_memory呼び出しを高速化する
+    """
+    import threading
+    threading.Thread(target=_load_embedder, daemon=True).start()
     mcp.run(transport="stdio", show_banner=False, log_level="ERROR")
 
 
