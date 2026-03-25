@@ -76,8 +76,10 @@ _HOOKS_CONFIG: dict[str, list[dict[str, object]]] = {
 }
 
 _MCP_SERVER_CONFIG: dict[str, object] = {
+    "type": "stdio",
     "command": "cc-mnemos",
     "args": ["server"],
+    "env": {"PYTHONUNBUFFERED": "1"},
 }
 
 
@@ -87,26 +89,33 @@ _MCP_SERVER_CONFIG: dict[str, object] = {
 def run_init(
     settings_path: Path | None = None,
     claude_md_path: Path | None = None,
+    mcp_config_path: Path | None = None,
 ) -> None:
-    """hooks / MCP 設定を settings.json に登録し、CLAUDE.md にルールを追記する
+    """hooks / MCP 設定を登録し、CLAUDE.md にルールを追記する
 
     Args:
-        settings_path: settings.json のパス (None の場合は ~/.claude/settings.json)
+        settings_path: Claude Code settings.json のパス
+            (None の場合は ~/.claude/settings.json)
         claude_md_path: CLAUDE.md のパス (None の場合は ~/.claude/CLAUDE.md)
+        mcp_config_path: Claude Code user config のパス
+            (None の場合は ~/.claude.json)
     """
     # 1. パス解決
     if settings_path is None:
         settings_path = Path.home() / ".claude" / "settings.json"
     if claude_md_path is None:
         claude_md_path = Path.home() / ".claude" / "CLAUDE.md"
+    if mcp_config_path is None:
+        mcp_config_path = Path.home() / ".claude.json"
 
     # 2. settings.json の読み書き
     _update_settings(settings_path)
+    _update_mcp_config(mcp_config_path)
 
     # 3. CLAUDE.md の追記
     _update_claude_md(claude_md_path)
 
-    print("init 完了: settings.json と CLAUDE.md を更新しました")
+    print("init 完了: settings.json / .claude.json / CLAUDE.md を更新しました")
 
 
 def _resolve_command_path() -> str:
@@ -142,7 +151,7 @@ def _normalize_path(path: str) -> str:
 
 
 def _update_settings(settings_path: Path) -> None:
-    """settings.json にフック・MCP 設定をマージする"""
+    """settings.json にフック設定をマージする"""
     # 親ディレクトリ作成
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -176,23 +185,36 @@ def _update_settings(settings_path: Path) -> None:
         # 新規も既存も常に上書き（パス更新のため）
         hooks[event_name] = event_entries
 
-    # mcpServers のマージ
-    mcp_servers = settings.setdefault("mcpServers", {})
-    if not isinstance(mcp_servers, dict):
-        mcp_servers = {}
-        settings["mcpServers"] = mcp_servers
-
-    # 常にパスを更新（python -m で起動、PYTHONUNBUFFERED必須）
-    python_path = _normalize_path(str(Path(sys.executable)))
-    mcp_servers["cc-mnemos"] = {
-        "command": python_path,
-        "args": ["-m", "cc_mnemos.server"],
-        "env": {"PYTHONUNBUFFERED": "1"},
-    }
-
     # 書き戻し
     settings_path.write_text(
         json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _update_mcp_config(mcp_config_path: Path) -> None:
+    """Claude Code user config に MCP サーバー設定をマージする"""
+    mcp_config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if mcp_config_path.exists():
+        raw = mcp_config_path.read_text(encoding="utf-8")
+        config: dict[str, object] = json.loads(raw) if raw.strip() else {}
+    else:
+        config = {}
+
+    mcp_servers = config.setdefault("mcpServers", {})
+    if not isinstance(mcp_servers, dict):
+        mcp_servers = {}
+        config["mcpServers"] = mcp_servers
+
+    import copy
+
+    resolved_mcp_config = copy.deepcopy(_MCP_SERVER_CONFIG)
+    resolved_mcp_config["command"] = _normalize_path(_resolve_command_path())
+    mcp_servers["cc-mnemos"] = resolved_mcp_config
+
+    mcp_config_path.write_text(
+        json.dumps(config, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
