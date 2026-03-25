@@ -229,6 +229,10 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 # ---------------------------------------------------------------------------
 async def _run_server_async() -> None:
     """MCPサーバーを非同期で起動する"""
+    # ワーカーデーモンをバックグラウンドで起動開始
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, _ensure_worker)
+
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
