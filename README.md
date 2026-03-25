@@ -78,6 +78,7 @@ Pipeline:
 | `cc-mnemos init`                  | Register hooks and MCP server in Claude Code |
 | `cc-mnemos init --import-history` | Also import existing session history         |
 | `cc-mnemos stats`                 | Show memory statistics                       |
+| `cc-mnemos rebuild`               | Clear DB and re-import all sessions          |
 | `cc-mnemos search "query"`        | Search memories from CLI                     |
 | `cc-mnemos server`                | Start the MCP server                         |
 
@@ -193,6 +194,7 @@ Claude Code
 | `cc-mnemos init`                  | フックと MCP サーバーを Claude Code に登録 |
 | `cc-mnemos init --import-history` | 既存セッション履歴もインポート             |
 | `cc-mnemos stats`                 | 記憶の統計情報を表示                       |
+| `cc-mnemos rebuild`               | DB をクリアして全セッション再インポート    |
 | `cc-mnemos search "クエリ"`       | CLI から記憶を検索                         |
 | `cc-mnemos server`                | MCP サーバーを起動                         |
 

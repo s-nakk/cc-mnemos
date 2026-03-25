@@ -247,6 +247,39 @@ def _handle_init(args: argparse.Namespace) -> None:
         import_history(cfg)
 
 
+def _handle_rebuild(args: argparse.Namespace) -> None:
+    """rebuild サブコマンドのハンドラ"""
+    from cc_mnemos.batch_import import import_history
+    from cc_mnemos.config import Config
+    from cc_mnemos.store import MemoryStore
+
+    cfg = Config.load()
+    store = MemoryStore(cfg)
+
+    stats = store.get_stats()
+    total = stats["total_chunks"]
+    sessions = stats["total_sessions"]
+    print(f"既存データ: {sessions} sessions, {total} chunks")
+
+    if not args.yes:
+        answer = input("DBをクリアして全セッションを再インポートしますか？ [y/N] ")
+        if answer.lower() not in ("y", "yes"):
+            print("キャンセルしました")
+            store.close()
+            return
+
+    store.conn.execute("DELETE FROM chunks")
+    store.conn.execute("DELETE FROM sessions")
+    store.conn.execute("DELETE FROM chunk_vec_map")
+    if store._use_sqlite_vec:
+        store.conn.execute("DELETE FROM vec_chunks")
+    store.conn.commit()
+    store.close()
+    print("DBをクリアしました")
+
+    import_history(cfg)
+
+
 def _handle_setup(args: argparse.Namespace) -> None:
     """setup サブコマンドのハンドラ"""
     run_setup()
@@ -358,6 +391,18 @@ def main() -> None:
         help="モデルダウンロード + DB 初期化を実行する",
     )
     sub_setup.set_defaults(handler=_handle_setup)
+
+    # rebuild
+    sub_rebuild = subparsers.add_parser(
+        "rebuild",
+        help="DB をクリアして全セッションを再インポートする",
+    )
+    sub_rebuild.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="確認プロンプトをスキップする",
+    )
+    sub_rebuild.set_defaults(handler=_handle_rebuild)
 
     # stats
     sub_stats = subparsers.add_parser(
