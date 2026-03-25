@@ -50,8 +50,9 @@ def format_recall_output(
 
     lines.append("")
 
-    # 横断知見セクション
+    # 横断知見セクション（content重複排除）
     lines.append("## よく参照される知見")
+    seen_contents: set[str] = set()
     for chunk in cross_project_chunks:
         tags_str = str(chunk.get("tags", "[]"))
         try:
@@ -60,6 +61,10 @@ def format_recall_output(
             tags = []
         tags_label = ", ".join(str(t) for t in tags)
         assistant_msg = str(chunk.get("role_assistant", ""))
+        content_key = assistant_msg[:200]
+        if content_key in seen_contents:
+            continue
+        seen_contents.add(content_key)
         lines.append(f"- [{tags_label}] {assistant_msg}")
 
     lines.append("")
@@ -124,8 +129,10 @@ def _run_recall_impl(hook_input: dict[str, object], config: Config) -> None:
         # プロジェクト固有の直近チャンク
         recent_chunks = store.get_recent_chunks(project=project_name, limit=5)
 
-        # プロジェクト横断の知見
-        cross_project_chunks = store.get_recent_chunks(project=None, limit=5)
+        # プロジェクト横断の知見（generalタグのみは除外、現プロジェクトも除外）
+        cross_project_chunks = store.get_tagged_chunks(
+            limit=5, exclude_project=project_name
+        )
     finally:
         store.close()
 

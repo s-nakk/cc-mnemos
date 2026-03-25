@@ -736,6 +736,61 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_tagged_chunks(
+        self,
+        *,
+        limit: int = 5,
+        exclude_project: str | None = None,
+        exclude_tags: list[str] | None = None,
+    ) -> list[dict[str, str | int]]:
+        """特定タグが付いたチャンクを横断的に取得する
+
+        generalタグのみのチャンクを除外し、実際にカテゴリ分類された
+        知見のみを返す
+
+        Args:
+            limit: 結果の最大件数
+            exclude_project: 除外するプロジェクト名
+            exclude_tags: 除外するタグ名リスト
+
+        Returns:
+            チャンクの辞書リスト(新しい順)
+        """
+        if exclude_tags is None:
+            exclude_tags = ["general"]
+
+        # generalのみのチャンクを除外するため、tags列をフィルタ
+        rows = self.conn.execute(
+            """
+            SELECT c.id, c.session_id, c.role_user, c.role_assistant,
+                   c.content, c.tags, c.created_at, c.token_count
+            FROM chunks c
+            JOIN sessions s ON c.session_id = s.session_id
+            WHERE c.tags != '["general"]'
+            ORDER BY c.created_at DESC
+            LIMIT ?
+            """,
+            (limit * 3,),  # フィルタ後に絞るため余裕を持って取得
+        ).fetchall()
+
+        results: list[dict[str, str | int]] = []
+        for row in rows:
+            d = dict(row)
+            # プロジェクト除外
+            if exclude_project:
+                session_id = str(d.get("session_id", ""))
+                sess = self.conn.execute(
+                    "SELECT project FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if sess and sess[0] == exclude_project:
+                    continue
+            results.append(d)
+            if len(results) >= limit:
+                break
+
+        return results
+
     def close(self) -> None:
         """データベース接続を閉じる"""
         self.conn.close()
