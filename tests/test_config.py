@@ -37,8 +37,8 @@ class TestConfig:
         assert config.time_decay_half_life_days == 180
         assert config.fts_weight == 2.0
         assert config.vector_weight == 0.75
-        assert config.max_chunk_tokens == 2000
-        assert config.min_chunk_tokens == 20
+        assert config.max_chunk_chars == 1500
+        assert config.min_chunk_chars == 20
         assert config.default_search_limit == 10
 
     def test_from_toml(self, tmp_path: Path) -> None:

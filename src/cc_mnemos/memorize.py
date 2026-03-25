@@ -56,8 +56,8 @@ def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
     # 3. チャンク分割
     chunks = chunker.chunk_transcript(
         transcript_path,
-        max_tokens=config.max_chunk_tokens,
-        min_tokens=config.min_chunk_tokens,
+        max_chars=config.max_chunk_chars,
+        min_chars=config.min_chunk_chars,
     )
     if not chunks:
         logger.info("チャンクが生成されませんでした")

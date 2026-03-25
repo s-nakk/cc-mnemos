@@ -131,9 +131,10 @@ class MemoryStore:
 
     def _init_schema(self) -> None:
         """データベーススキーマを初期化する"""
-        # WALモード + busy_timeout
+        # WALモード + busy_timeout + 外部キー制約
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
+        self.conn.execute("PRAGMA foreign_keys=ON")
 
         # テーブル作成
         self.conn.executescript(_CREATE_TABLES)
@@ -745,8 +746,8 @@ class MemoryStore:
     ) -> list[dict[str, str | int]]:
         """特定タグが付いたチャンクを横断的に取得する
 
-        generalタグのみのチャンクを除外し、実際にカテゴリ分類された
-        知見のみを返す
+        exclude_tagsのみのチャンクを除外し、実際にカテゴリ分類された
+        知見のみを返す。プロジェクト除外もSQL側で処理する
 
         Args:
             limit: 結果の最大件数
@@ -759,37 +760,32 @@ class MemoryStore:
         if exclude_tags is None:
             exclude_tags = ["general"]
 
-        # generalのみのチャンクを除外するため、tags列をフィルタ
-        rows = self.conn.execute(
-            """
+        # exclude_tagsのみのチャンクを除外するWHERE句を構築
+        # JSON配列を文字列比較で除外（例: '["general"]'）
+        exclude_patterns = [
+            json.dumps([t]) for t in exclude_tags
+        ]
+        placeholders = ",".join("?" for _ in exclude_patterns)
+
+        params: list[str | int] = list(exclude_patterns)
+
+        query = f"""
             SELECT c.id, c.session_id, c.role_user, c.role_assistant,
                    c.content, c.tags, c.created_at, c.token_count
             FROM chunks c
             JOIN sessions s ON c.session_id = s.session_id
-            WHERE c.tags != '["general"]'
-            ORDER BY c.created_at DESC
-            LIMIT ?
-            """,
-            (limit * 3,),  # フィルタ後に絞るため余裕を持って取得
-        ).fetchall()
+            WHERE c.tags NOT IN ({placeholders})
+        """
 
-        results: list[dict[str, str | int]] = []
-        for row in rows:
-            d = dict(row)
-            # プロジェクト除外
-            if exclude_project:
-                session_id = str(d.get("session_id", ""))
-                sess = self.conn.execute(
-                    "SELECT project FROM sessions WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()
-                if sess and sess[0] == exclude_project:
-                    continue
-            results.append(d)
-            if len(results) >= limit:
-                break
+        if exclude_project:
+            query += " AND s.project != ?"
+            params.append(exclude_project)
 
-        return results
+        query += " ORDER BY c.created_at DESC LIMIT ?"
+        params.append(limit)
+
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
 
     def close(self) -> None:
         """データベース接続を閉じる"""

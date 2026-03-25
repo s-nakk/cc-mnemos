@@ -234,14 +234,14 @@ class Config:
 
     # --- Chunking ---
     @property
-    def max_chunk_tokens(self) -> int:
-        """チャンクの最大トークン数を返す"""
-        return int(self._raw.get("chunking", {}).get("max_chunk_tokens", 2000))  # type: ignore[union-attr]
+    def max_chunk_chars(self) -> int:
+        """チャンクの最大文字数を返す"""
+        return int(self._raw.get("chunking", {}).get("max_chunk_chars", 1500))  # type: ignore[union-attr]
 
     @property
-    def min_chunk_tokens(self) -> int:
-        """チャンクの最小トークン数を返す"""
-        return int(self._raw.get("chunking", {}).get("min_chunk_tokens", 20))  # type: ignore[union-attr]
+    def min_chunk_chars(self) -> int:
+        """チャンクの最小文字数を返す"""
+        return int(self._raw.get("chunking", {}).get("min_chunk_chars", 20))  # type: ignore[union-attr]
 
     # --- Maintenance ---
     @property

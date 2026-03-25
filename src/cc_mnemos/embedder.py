@@ -24,6 +24,15 @@ class Embedder:
         self._batch_size = config.embedding_batch_size
         self._dimension = config.embedding_dimension
 
+        # 設定値とモデルの実際の次元数を検証
+        actual_dim = self._model.get_sentence_embedding_dimension()
+        if actual_dim is not None and actual_dim != self._dimension:
+            msg = (
+                f"embedding_dimension設定({self._dimension})とモデルの"
+                f"実際の次元数({actual_dim})が一致しません"
+            )
+            raise ValueError(msg)
+
     @staticmethod
     def _detect_device() -> str:
         """利用可能な最速デバイスを自動検出"""

@@ -108,7 +108,7 @@ def import_history(
             project_dir_name = rel.parts[0]
             cwd = _resolve_cwd(project_dir_name)
 
-            chunks = chunk_transcript(jsonl, config.max_chunk_tokens, config.min_chunk_tokens)
+            chunks = chunk_transcript(jsonl, config.max_chunk_chars, config.min_chunk_chars)
             if not chunks:
                 continue
 
