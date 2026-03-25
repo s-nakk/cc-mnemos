@@ -26,4 +26,9 @@ Thumbs.db
 *.db
 *.db-journal
 *.db-wal
+*.db-shm
+*.db.bak
 error.log
+
+# Lock files (library, not application)
+uv.lock

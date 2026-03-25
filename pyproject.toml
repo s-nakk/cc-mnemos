@@ -22,7 +22,13 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
+
+[project.urls]
+Homepage = "https://github.com/shuyo/cc-mnemos"
+Repository = "https://github.com/shuyo/cc-mnemos"
+Issues = "https://github.com/shuyo/cc-mnemos/issues"
 dependencies = [
     "sentence-transformers>=5.0.0",
     "sqlite-vec>=0.1.0",
