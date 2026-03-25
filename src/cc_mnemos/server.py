@@ -154,3 +154,7 @@ def list_projects() -> list[str]:
 def run_server() -> None:
     """MCPサーバーをstdioトランスポートで起動する"""
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    run_server()
