@@ -39,7 +39,30 @@ def _resolve_cwd(project_dir_name: str) -> str:
 
 
 def _infer_project(cwd: str) -> str:
-    """cwdパスからプロジェクト名を推定（subprocess不使用）"""
+    """cwdパスからプロジェクト名を推定
+
+    git remote origin URLを試行し、取得できなければパスベースで推定する
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            url = result.stdout.strip()
+            name = url.rstrip("/").rsplit("/", 1)[-1]
+            if name.endswith(".git"):
+                name = name[:-4]
+            if name:
+                return name
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
     parts = [p for p in cwd.replace("\\", "/").split("/") if p]
     for i, part in enumerate(parts):
         if part.lower() == "projects" and i + 1 < len(parts):
@@ -82,6 +105,7 @@ def import_history(
     config: Config,
     embedder: Embedder | None = None,
     verbose: bool = True,
+    device: str | None = None,
 ) -> dict[str, int]:
     """既存のClaude Codeセッション履歴を一括インポート
 
@@ -126,7 +150,7 @@ def import_history(
     # Embedderを1回だけロード
     if embedder is None:
         from cc_mnemos.embedder import Embedder as EmbedderClass
-        embedder = EmbedderClass(config)
+        embedder = EmbedderClass(config, device=device)
 
     imported = 0
     errors = 0
@@ -203,9 +227,15 @@ def import_history(
             if verbose and errors <= 5:
                 logger.exception("  ERROR %s", jsonl.name[:30])
 
-        # 50セッションごとにGC実行してメモリ解放
+        # 50セッションごとにGC + CUDAキャッシュ解放
         if (i + 1) % 50 == 0:
             gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
 
         if verbose:
             elapsed = time.time() - start

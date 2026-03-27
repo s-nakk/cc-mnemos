@@ -87,7 +87,8 @@ def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
     now = datetime.now(tz=timezone.utc).isoformat()
     session_id = str(hook_input.get("session_id", ""))
     if not session_id:
-        session_id = hashlib.sha256(now.encode()).hexdigest()
+        import uuid
+        session_id = uuid.uuid4().hex
 
     store = MemoryStore(config)
     try:

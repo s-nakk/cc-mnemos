@@ -372,7 +372,8 @@ def _handle_init(args: argparse.Namespace) -> None:
         from cc_mnemos.config import Config
 
         cfg = Config.load()
-        import_history(cfg)
+        device = "cpu" if args.cpu else None
+        import_history(cfg, device=device)
 
 
 def _handle_rebuild(args: argparse.Namespace) -> None:
@@ -396,16 +397,17 @@ def _handle_rebuild(args: argparse.Namespace) -> None:
             store.close()
             return
 
+    if store._use_sqlite_vec:
+        store.conn.execute("DELETE FROM vec_chunks")
     store.conn.execute("DELETE FROM chunk_vec_map")
     store.conn.execute("DELETE FROM chunks")
     store.conn.execute("DELETE FROM sessions")
-    if store._use_sqlite_vec:
-        store.conn.execute("DELETE FROM vec_chunks")
     store.conn.commit()
     store.close()
     print("DBをクリアしました")
 
-    import_history(cfg)
+    device = "cpu" if args.cpu else None
+    import_history(cfg, device=device)
 
 
 def _handle_deduplicate(args: argparse.Namespace) -> None:
@@ -548,6 +550,11 @@ def main() -> None:
         action="store_true",
         help="既存のClaude Codeセッション履歴を一括インポートする",
     )
+    sub_init.add_argument(
+        "--cpu",
+        action="store_true",
+        help="GPU を使用せず CPU でEmbedding生成する",
+    )
     sub_init.set_defaults(handler=_handle_init)
 
     # setup
@@ -566,6 +573,11 @@ def main() -> None:
         "-y", "--yes",
         action="store_true",
         help="確認プロンプトをスキップする",
+    )
+    sub_rebuild.add_argument(
+        "--cpu",
+        action="store_true",
+        help="GPU を使用せず CPU でEmbedding生成する",
     )
     sub_rebuild.set_defaults(handler=_handle_rebuild)
 

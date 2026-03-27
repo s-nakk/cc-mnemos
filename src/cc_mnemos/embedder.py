@@ -19,9 +19,9 @@ TOPIC_PREFIX = "トピック: "
 class Embedder:
     """sentence-transformersベースのEmbedder"""
 
-    def __init__(self, config: Config) -> None:
-        device = self._detect_device()
-        self._model = SentenceTransformer(config.embedding_model, device=device)
+    def __init__(self, config: Config, *, device: str | None = None) -> None:
+        resolved_device = device if device else self._detect_device()
+        self._model = SentenceTransformer(config.embedding_model, device=resolved_device)
         self._batch_size = config.embedding_batch_size
         self._dimension = config.embedding_dimension
 

@@ -245,22 +245,25 @@ class MemoryStore:
 
         chunk_ids = [row[0] for row in chunk_rows]
 
-        # vec_chunks + chunk_vec_map のクリーンアップ
+        placeholders = ",".join("?" for _ in chunk_ids)
+
+        # vec_chunks + chunk_vec_map のバッチクリーンアップ
         if self._use_sqlite_vec:
-            for cid in chunk_ids:
-                map_row = self.conn.execute(
-                    "SELECT rowid_int FROM chunk_vec_map WHERE chunk_id = ?",
-                    (cid,),
-                ).fetchone()
-                if map_row:
-                    self.conn.execute(
-                        "DELETE FROM vec_chunks WHERE rowid = ?", (map_row[0],)
-                    )
+            map_rows = self.conn.execute(
+                f"SELECT rowid_int FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",  # noqa: S608
+                chunk_ids,
+            ).fetchall()
+            if map_rows:
+                rowid_phs = ",".join("?" for _ in map_rows)
+                rowids = [r[0] for r in map_rows]
+                self.conn.execute(
+                    f"DELETE FROM vec_chunks WHERE rowid IN ({rowid_phs})",  # noqa: S608
+                    rowids,
+                )
 
         # chunk_vec_map 削除
-        placeholders = ",".join("?" for _ in chunk_ids)
         self.conn.execute(
-            f"DELETE FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",
+            f"DELETE FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",  # noqa: S608
             chunk_ids,
         )
 
@@ -951,26 +954,29 @@ class MemoryStore:
             batch = dup_ids[start : start + batch_size]
             placeholders = ",".join("?" for _ in batch)
 
-            # vec_chunks クリーンアップ
+            # vec_chunks バッチクリーンアップ
             if self._use_sqlite_vec:
                 map_rows = self.conn.execute(
-                    f"SELECT rowid_int FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",
+                    f"SELECT rowid_int FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",  # noqa: S608
                     batch,
                 ).fetchall()
-                for mr in map_rows:
+                if map_rows:
+                    rowid_phs = ",".join("?" for _ in map_rows)
+                    rowids = [r[0] for r in map_rows]
                     self.conn.execute(
-                        "DELETE FROM vec_chunks WHERE rowid = ?", (mr[0],)
+                        f"DELETE FROM vec_chunks WHERE rowid IN ({rowid_phs})",  # noqa: S608
+                        rowids,
                     )
 
             # chunk_vec_map 削除
             self.conn.execute(
-                f"DELETE FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",
+                f"DELETE FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",  # noqa: S608
                 batch,
             )
 
             # chunks 削除 (FTSトリガーが chunks_fts も自動削除)
             self.conn.execute(
-                f"DELETE FROM chunks WHERE id IN ({placeholders})",
+                f"DELETE FROM chunks WHERE id IN ({placeholders})",  # noqa: S608
                 batch,
             )
 
