@@ -22,6 +22,13 @@ _NOISE_PREFIXES = (
     "ARGUMENTS:",
 )
 
+# システムタグ除去パターン
+_SYSTEM_TAGS_RE = re.compile(
+    r"<local-command-caveat>.*?</local-command-caveat>\s*"
+    r"|<local-command-stdout>.*?</local-command-stdout>\s*",
+    re.DOTALL,
+)
+
 # 文脈なし短文パターン（追撃発話）
 _PHATIC_RE = re.compile(
     r"^(はい|うん|ok|OK|yes|no|了解|ありがとう|A|B|C|D|それで|続けて|進めて|hai)$",
@@ -145,6 +152,8 @@ def chunk_transcript(
         text = _extract_text(msg)
 
         if msg_type in ("human", "user"):
+            # システムタグ(local-command-caveat等)を除去して実際のユーザー発話を抽出
+            text = _SYSTEM_TAGS_RE.sub("", text).strip()
             if text and not any(text.lstrip().startswith(p) for p in _NOISE_PREFIXES):
                 user_parts.append(_truncate(text, max_chars))
         elif msg_type == "assistant" and user_parts:

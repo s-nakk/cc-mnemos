@@ -408,6 +408,43 @@ def _handle_rebuild(args: argparse.Namespace) -> None:
     import_history(cfg)
 
 
+def _handle_deduplicate(args: argparse.Namespace) -> None:
+    """deduplicate サブコマンドのハンドラ"""
+    from cc_mnemos.config import Config
+    from cc_mnemos.store import MemoryStore
+
+    cfg = Config.load()
+    store = MemoryStore(cfg)
+    try:
+        stats_before = store.get_stats()
+        print(f"修正前: {stats_before['total_chunks']} chunks, "
+              f"{stats_before['total_sessions']} sessions")
+
+        # 1. プロジェクト名の正規化
+        renames = store.normalize_project_names()
+        if renames:
+            print(f"\nプロジェクト名を統一しました:")
+            for old, new in renames.items():
+                print(f"  {old} → {new}")
+        else:
+            print("\nプロジェクト名の不整合はありません")
+
+        # 2. 重複チャンクの削除
+        removed = store.deduplicate_chunks()
+        print(f"\n重複チャンクを {removed} 件削除しました")
+
+        stats_after = store.get_stats()
+        print(f"\n修正後: {stats_after['total_chunks']} chunks, "
+              f"{stats_after['total_sessions']} sessions")
+
+        reduction = stats_before['total_chunks'] - stats_after['total_chunks']
+        if stats_before['total_chunks'] > 0:
+            pct = reduction / stats_before['total_chunks'] * 100
+            print(f"削減率: {pct:.1f}% ({reduction} 件削除)")
+    finally:
+        store.close()
+
+
 def _handle_setup(args: argparse.Namespace) -> None:
     """setup サブコマンドのハンドラ"""
     run_setup()
@@ -531,6 +568,13 @@ def main() -> None:
         help="確認プロンプトをスキップする",
     )
     sub_rebuild.set_defaults(handler=_handle_rebuild)
+
+    # deduplicate
+    sub_deduplicate = subparsers.add_parser(
+        "deduplicate",
+        help="重複チャンクの削除とプロジェクト名の正規化を実行する",
+    )
+    sub_deduplicate.set_defaults(handler=_handle_deduplicate)
 
     # stats
     sub_stats = subparsers.add_parser(

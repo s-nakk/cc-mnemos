@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -85,11 +85,16 @@ def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
 
     # 7. SQLite へ永続化
     now = datetime.now(tz=timezone.utc).isoformat()
-    session_id = str(hook_input.get("session_id", str(uuid.uuid4())))
+    session_id = str(hook_input.get("session_id", ""))
+    if not session_id:
+        session_id = hashlib.sha256(now.encode()).hexdigest()
 
     store = MemoryStore(config)
     try:
         with store.transaction():
+            # 再インジェスト時は既存チャンクを削除してからクリーンに挿入
+            store.delete_session_chunks(session_id, commit=False)
+
             store.insert_session(
                 session_id=session_id,
                 project=project_name,
@@ -99,7 +104,10 @@ def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
             )
 
             for i, c in enumerate(chunks):
-                chunk_id = str(uuid.uuid4())
+                # 決定論的ID: 同一セッション+同一コンテンツは常に同じIDになる
+                chunk_id = hashlib.sha256(
+                    f"{session_id}:{c.content}".encode()
+                ).hexdigest()
                 chunk_data: dict[str, str | int] = {
                     "id": chunk_id,
                     "session_id": session_id,

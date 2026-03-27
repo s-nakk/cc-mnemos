@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import logging
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -179,8 +179,12 @@ def import_history(
                         tag_rules,
                         keyword_text=chunk.role_user,
                     )
+                    # 決定論的ID: 同一セッション+同一コンテンツは常に同じID
+                    chunk_id = hashlib.sha256(
+                        f"{jsonl.stem}:{chunk.content}".encode()
+                    ).hexdigest()
                     chunk_data: dict[str, str | int] = {
-                        "id": str(uuid.uuid4()),
+                        "id": chunk_id,
                         "session_id": jsonl.stem,
                         "role_user": chunk.role_user,
                         "role_assistant": chunk.role_assistant,

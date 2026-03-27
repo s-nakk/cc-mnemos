@@ -223,6 +223,56 @@ class MemoryStore:
         else:
             self.conn.commit()
 
+    def delete_session_chunks(self, session_id: str, *, commit: bool = True) -> int:
+        """セッションの既存チャンクをすべて削除する
+
+        再インジェスト時に古いチャンクを除去してから新しいチャンクを挿入するために使用する。
+        chunks, chunk_vec_map, vec_chunks, chunks_fts を整合的にクリーンアップする
+
+        Args:
+            session_id: 対象セッションID
+            commit: 自動コミットするか
+
+        Returns:
+            削除したチャンク数
+        """
+        chunk_rows = self.conn.execute(
+            "SELECT id FROM chunks WHERE session_id = ?", (session_id,)
+        ).fetchall()
+
+        if not chunk_rows:
+            return 0
+
+        chunk_ids = [row[0] for row in chunk_rows]
+
+        # vec_chunks + chunk_vec_map のクリーンアップ
+        if self._use_sqlite_vec:
+            for cid in chunk_ids:
+                map_row = self.conn.execute(
+                    "SELECT rowid_int FROM chunk_vec_map WHERE chunk_id = ?",
+                    (cid,),
+                ).fetchone()
+                if map_row:
+                    self.conn.execute(
+                        "DELETE FROM vec_chunks WHERE rowid = ?", (map_row[0],)
+                    )
+
+        # chunk_vec_map 削除
+        placeholders = ",".join("?" for _ in chunk_ids)
+        self.conn.execute(
+            f"DELETE FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",
+            chunk_ids,
+        )
+
+        # chunks 削除 (FTSトリガーが chunks_fts も自動削除)
+        deleted = self.conn.execute(
+            "DELETE FROM chunks WHERE session_id = ?", (session_id,)
+        ).rowcount
+
+        if commit:
+            self.conn.commit()
+        return deleted
+
     def insert_session(
         self,
         *,
@@ -869,6 +919,110 @@ class MemoryStore:
 
         rows = self.conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
+
+    def deduplicate_chunks(self) -> int:
+        """重複チャンクを削除する(同一session_id + contentの重複を除去)
+
+        各(session_id, content)グループで最初のチャンクのみ残し、
+        残りを削除する。関連する chunk_vec_map, vec_chunks, chunks_fts も整合的にクリーンアップする
+
+        Returns:
+            削除したチャンク数
+        """
+        # 重複チャンクのIDを取得 (各グループの最小IDのみ残す)
+        dup_rows = self.conn.execute(
+            """
+            SELECT id FROM chunks
+            WHERE id NOT IN (
+                SELECT MIN(id) FROM chunks GROUP BY session_id, content
+            )
+            """
+        ).fetchall()
+
+        if not dup_rows:
+            return 0
+
+        dup_ids = [row[0] for row in dup_rows]
+        total = len(dup_ids)
+
+        # バッチ処理 (SQLiteパラメータ上限対策)
+        batch_size = 500
+        for start in range(0, total, batch_size):
+            batch = dup_ids[start : start + batch_size]
+            placeholders = ",".join("?" for _ in batch)
+
+            # vec_chunks クリーンアップ
+            if self._use_sqlite_vec:
+                map_rows = self.conn.execute(
+                    f"SELECT rowid_int FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for mr in map_rows:
+                    self.conn.execute(
+                        "DELETE FROM vec_chunks WHERE rowid = ?", (mr[0],)
+                    )
+
+            # chunk_vec_map 削除
+            self.conn.execute(
+                f"DELETE FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",
+                batch,
+            )
+
+            # chunks 削除 (FTSトリガーが chunks_fts も自動削除)
+            self.conn.execute(
+                f"DELETE FROM chunks WHERE id IN ({placeholders})",
+                batch,
+            )
+
+        self.conn.commit()
+        return total
+
+    def normalize_project_names(self) -> dict[str, str]:
+        """大文字小文字が異なる重複プロジェクト名を統一する
+
+        同一名の大文字小文字バリアントが存在する場合、
+        最もチャンク数の多いバリアントに統一する
+
+        Returns:
+            統一された名前のマッピング {旧名: 新名}
+        """
+        rows = self.conn.execute(
+            """
+            SELECT s.project, COUNT(c.id) as cnt
+            FROM sessions s
+            LEFT JOIN chunks c ON s.session_id = c.session_id
+            GROUP BY s.project
+            ORDER BY cnt DESC
+            """
+        ).fetchall()
+
+        # 大文字小文字を無視してグループ化
+        groups: dict[str, list[tuple[str, int]]] = {}
+        for row in rows:
+            name = row[0]
+            count = row[1]
+            key = name.lower()
+            if key not in groups:
+                groups[key] = []
+            groups[key].append((name, count))
+
+        renames: dict[str, str] = {}
+        for variants in groups.values():
+            if len(variants) <= 1:
+                continue
+            # 最もチャンクが多いバリアントを正規名とする
+            canonical = max(variants, key=lambda v: v[1])[0]
+            for name, _ in variants:
+                if name != canonical:
+                    renames[name] = canonical
+                    self.conn.execute(
+                        "UPDATE sessions SET project = ? WHERE project = ?",
+                        (canonical, name),
+                    )
+
+        if renames:
+            self.conn.commit()
+        return renames
 
     def close(self) -> None:
         """データベース接続を閉じる"""
