@@ -396,9 +396,9 @@ def _handle_rebuild(args: argparse.Namespace) -> None:
             store.close()
             return
 
+    store.conn.execute("DELETE FROM chunk_vec_map")
     store.conn.execute("DELETE FROM chunks")
     store.conn.execute("DELETE FROM sessions")
-    store.conn.execute("DELETE FROM chunk_vec_map")
     if store._use_sqlite_vec:
         store.conn.execute("DELETE FROM vec_chunks")
     store.conn.commit()
