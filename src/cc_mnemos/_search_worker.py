@@ -96,7 +96,12 @@ def run_daemon(port: int) -> None:
     embedder = Embedder(config)
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if sys.platform == "win32":
+        # Windowsでは SO_REUSEADDR が既存リスナーへの重複bindを許可してしまう
+        # SO_EXCLUSIVEADDRUSE で排他的bindにし、ゾンビワーカーの蓄積を防止する
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)  # type: ignore[attr-defined]
+    else:
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", port))
     srv.listen(5)
 

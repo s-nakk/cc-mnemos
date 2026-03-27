@@ -163,6 +163,7 @@ def _search_memory_sync(
     limit: int = 10,
 ) -> list[JsonObject]:
     """デーモンワーカー経由でハイブリッド検索を実行する"""
+    global _worker_started  # noqa: PLW0603
     import socket
 
     _ensure_worker()
@@ -174,21 +175,27 @@ def _search_memory_sync(
         "limit": limit,
     })
 
-    try:
-        with socket.create_connection(("127.0.0.1", _WORKER_PORT), timeout=30) as sock:
-            sock.sendall(request.encode("utf-8") + b"\n")
-            # レスポンスを読み取り
-            chunks: list[bytes] = []
-            while True:
-                data = sock.recv(65536)
-                if not data:
-                    break
-                chunks.append(data)
-            response = b"".join(chunks).decode("utf-8")
-            return _decode_search_results(response)
-    except Exception:  # noqa: BLE001
-        logger.exception("search worker communication failed")
-        return []
+    for attempt in range(2):
+        try:
+            with socket.create_connection(("127.0.0.1", _WORKER_PORT), timeout=30) as sock:
+                sock.sendall(request.encode("utf-8") + b"\n")
+                # レスポンスを読み取り
+                chunks: list[bytes] = []
+                while True:
+                    data = sock.recv(65536)
+                    if not data:
+                        break
+                    chunks.append(data)
+                response = b"".join(chunks).decode("utf-8")
+                return _decode_search_results(response)
+        except Exception:  # noqa: BLE001
+            if attempt == 0:
+                logger.warning("search worker communication failed, restarting worker")
+                _worker_started = False
+                _ensure_worker()
+            else:
+                logger.exception("search worker communication failed after restart")
+    return []
 
 
 # ---------------------------------------------------------------------------
