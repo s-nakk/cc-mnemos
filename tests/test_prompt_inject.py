@@ -95,7 +95,7 @@ class TestPromptInject:
 
 
 class TestFormatInjection:
-    def test_formats_results(self) -> None:
+    def test_formats_results_fts(self) -> None:
         results = [
             {
                 "tags": json.dumps(["ui-ux"]),
@@ -103,7 +103,44 @@ class TestFormatInjection:
             },
         ]
         output = _format_injection(results, "test-project")
-        assert "[cc-mnemos]" in output
+        assert "[cc-mnemos:FTS]" in output
+        assert "1 件" in output
         assert "test-project" in output
         assert "border-radius" in output
         assert "ui-ux" in output
+        assert "回答に活用した場合は" in output
+
+    def test_formats_results_hybrid(self) -> None:
+        results = [
+            {
+                "tags": json.dumps(["architecture"]),
+                "content": "APIルート設計について",
+            },
+        ]
+        output = _format_injection(results, "my-project", search_method="hybrid")
+        assert "[cc-mnemos:hybrid]" in output
+        assert "my-project" in output
+
+    def test_formats_qa_style(self) -> None:
+        """role_user/role_assistantがある場合はQ&A形式で表示される"""
+        results = [
+            {
+                "tags": json.dumps(["coding-style"]),
+                "content": "dummy",
+                "role_user": "border-radiusの設定方法を教えて",
+                "role_assistant": "CSSのborder-radiusで角丸を設定できます",
+            },
+        ]
+        output = _format_injection(results, "test-project")
+        assert "Q: border-radius" in output
+        assert "A: CSSのborder-radius" in output
+
+    def test_empty_tags_shows_general(self) -> None:
+        results = [
+            {
+                "tags": json.dumps([]),
+                "content": "何かのコンテンツがここにあります",
+            },
+        ]
+        output = _format_injection(results, "test-project")
+        assert "[general]" in output
