@@ -84,8 +84,11 @@ class TestFormatRecallOutput:
         assert "横断回答" in output
         assert "search_memory" in output
 
-    def test_date_format_in_output(self) -> None:
-        """日付がフォーマットされて出力される"""
+    def test_recent_section_has_no_date_prefix(self) -> None:
+        """直近セクションに日付プレフィックスが付かない
+
+        日付はセッション間で変動しプロンプトキャッシュを壊すため、recent には出力しない
+        """
         recent = [
             {
                 "role_user": "質問",
@@ -95,7 +98,25 @@ class TestFormatRecallOutput:
             },
         ]
         output = format_recall_output("proj", recent, [])
-        assert "2026-03-20" in output
+        assert "2026-03-20" not in output
+        assert "- 質問 → 回答" in output
+
+    def test_long_entries_are_truncated(self) -> None:
+        """長大なエントリはトランケートされる"""
+        long_user = "あ" * 500
+        long_assistant = "い" * 1000
+        recent = [
+            {
+                "role_user": long_user,
+                "role_assistant": long_assistant,
+                "created_at": "2026-03-20T10:00:00+00:00",
+                "tags": '["general"]',
+            },
+        ]
+        output = format_recall_output("proj", recent, [])
+        assert long_user not in output
+        assert long_assistant not in output
+        assert "..." in output
 
 
 class TestRunRecall:

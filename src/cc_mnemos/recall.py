@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import datetime
 from typing import TYPE_CHECKING
 
 from cc_mnemos import project
@@ -21,6 +20,26 @@ _REMINDER = (
     "新しい画面やコンポーネントの実装時、スタイル判断時は\n"
     "search_memory で過去のデザイン判断やコーディングパターンを確認してください"
 )
+
+# recall 出力のトランケート上限（プロンプトキャッシュの破壊面積を抑えるため）
+_USER_MSG_MAX_LENGTH = 150
+_ASSISTANT_MSG_MAX_LENGTH = 250
+
+
+def _truncate(text: str, limit: int) -> str:
+    """長文を limit 文字まで縮める。改行は空白に潰す
+
+    Args:
+        text: 対象の文字列
+        limit: 最大文字数
+
+    Returns:
+        limit を超える場合は末尾に "..." を付与した短縮版を返す
+    """
+    collapsed = text.strip().replace("\n", " ")
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[:limit] + "..."
 
 
 def format_recall_output(
@@ -41,12 +60,14 @@ def format_recall_output(
     lines: list[str] = []
 
     # プロジェクト別の直近記憶セクション
+    # 日付プレフィックスは入れない（日次で変動しプロンプトキャッシュを壊すため）
     lines.append(f"## 直近の記憶（{project_name}）")
     for chunk in recent_chunks:
-        date = _extract_date(str(chunk.get("created_at", "")))
-        user_msg = str(chunk.get("role_user", ""))
-        assistant_msg = str(chunk.get("role_assistant", ""))
-        lines.append(f"- [{date}] {user_msg} → {assistant_msg}")
+        user_msg = _truncate(str(chunk.get("role_user", "")), _USER_MSG_MAX_LENGTH)
+        assistant_msg = _truncate(
+            str(chunk.get("role_assistant", "")), _ASSISTANT_MSG_MAX_LENGTH
+        )
+        lines.append(f"- {user_msg} → {assistant_msg}")
 
     lines.append("")
 
@@ -60,35 +81,18 @@ def format_recall_output(
         except json.JSONDecodeError:
             tags = []
         tags_label = ", ".join(str(t) for t in tags)
-        assistant_msg = str(chunk.get("role_assistant", ""))
-        content_key = assistant_msg[:200]
+        raw_assistant = str(chunk.get("role_assistant", ""))
+        content_key = raw_assistant[:200]
         if content_key in seen_contents:
             continue
         seen_contents.add(content_key)
+        assistant_msg = _truncate(raw_assistant, _ASSISTANT_MSG_MAX_LENGTH)
         lines.append(f"- [{tags_label}] {assistant_msg}")
 
     lines.append("")
     lines.append(_REMINDER)
 
     return "\n".join(lines)
-
-
-def _extract_date(iso_str: str) -> str:
-    """ISO 8601文字列から日付部分 (YYYY-MM-DD) を抽出する
-
-    Args:
-        iso_str: ISO 8601形式の日時文字列
-
-    Returns:
-        日付文字列 (パース失敗時は元の文字列をそのまま返す)
-    """
-    if not iso_str:
-        return ""
-    try:
-        dt = datetime.fromisoformat(iso_str)
-        return dt.strftime("%Y-%m-%d")
-    except (ValueError, TypeError):
-        return iso_str
 
 
 def run_recall(hook_input: dict[str, object], config: Config) -> None:
