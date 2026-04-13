@@ -98,7 +98,7 @@ class TestHybridSearch:
             query_text="質問", query_embedding=embedding, tags=["ui-ux"], limit=10
         )
         for r in results:
-            assert "ui-ux" in json.loads(r["tags"])
+            assert "ui-ux" in json.loads(str(r["tags"]))
 
     def test_time_decay(self, store: MemoryStore) -> None:
         session_id = make_session_id()
@@ -204,7 +204,7 @@ class TestHybridSearch:
         )
 
         assert len(results) == 1
-        assert "ui-ux" in json.loads(results[0]["tags"])
+        assert "ui-ux" in json.loads(str(results[0]["tags"]))
 
 
 class TestStats:

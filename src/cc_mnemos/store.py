@@ -13,7 +13,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 import numpy as np
 
@@ -23,6 +23,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 2
+
+
+class StoreStats(TypedDict):
+    total_chunks: int
+    total_sessions: int
+    by_project: dict[str, int]
 
 # ---------------------------------------------------------------------------
 # スキーマ定義SQL
@@ -796,7 +802,7 @@ class MemoryStore:
             return False
         return any(tag in result_tags for tag in tags)
 
-    def get_stats(self) -> dict[str, int | dict[str, int]]:
+    def get_stats(self) -> StoreStats:
         """ストレージの統計情報を取得する
 
         Returns:

@@ -534,8 +534,8 @@ def _handle_deduplicate(args: argparse.Namespace) -> None:
         print(f"\n修正後: {stats_after['total_chunks']} chunks, "
               f"{stats_after['total_sessions']} sessions")
 
-        total_before = cast(int, stats_before["total_chunks"])
-        total_after = cast(int, stats_after["total_chunks"])
+        total_before = stats_before["total_chunks"]
+        total_after = stats_after["total_chunks"]
         reduction = total_before - total_after
         if total_before > 0:
             pct = reduction / total_before * 100

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from cc_mnemos import project
@@ -44,8 +45,8 @@ def _truncate(text: str, limit: int) -> str:
 
 def format_recall_output(
     project_name: str,
-    recent_chunks: list[dict[str, str | int]],
-    cross_project_chunks: list[dict[str, str | int]],
+    recent_chunks: Sequence[Mapping[str, object]],
+    cross_project_chunks: Sequence[Mapping[str, object]],
 ) -> str:
     """記憶出力をフォーマットする
 
@@ -95,7 +96,7 @@ def format_recall_output(
     return "\n".join(lines)
 
 
-def run_recall(hook_input: dict[str, object], config: Config) -> None:
+def run_recall(hook_input: Mapping[str, object], config: Config) -> None:
     """セッション開始時の記憶注入を実行する
 
     hookのstdinから情報を取得し、DBを検索して結果をstdoutへ出力する
@@ -114,7 +115,7 @@ def run_recall(hook_input: dict[str, object], config: Config) -> None:
         )
 
 
-def _run_recall_impl(hook_input: dict[str, object], config: Config) -> None:
+def _run_recall_impl(hook_input: Mapping[str, object], config: Config) -> None:
     """記憶注入の内部実装
 
     Args:

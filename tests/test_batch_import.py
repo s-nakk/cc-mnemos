@@ -6,7 +6,6 @@ import json
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
-from typing import cast
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -123,8 +122,8 @@ class TestImportHistory:
         # DB にセッションとチャンクが保存されていることを確認
         store = MemoryStore(config)
         stats = store.get_stats()
-        assert cast(int, stats["total_sessions"]) == 1
-        assert cast(int, stats["total_chunks"]) >= 1
+        assert stats["total_sessions"] == 1
+        assert stats["total_chunks"] >= 1
         store.close()
 
     def test_skip_already_imported(self, tmp_path: Path) -> None:
@@ -289,8 +288,8 @@ class TestImportHistory:
         ).fetchone()
         store.close()
 
-        assert cast(int, stats["total_sessions"]) == 1
-        assert cast(int, stats["total_chunks"]) >= 1
+        assert stats["total_sessions"] == 1
+        assert stats["total_chunks"] >= 1
         assert row is not None
         assert row[0] == "CodexApp"
         assert row[1] == "C:\\projects\\CodexApp"

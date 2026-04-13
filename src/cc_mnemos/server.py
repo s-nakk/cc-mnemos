@@ -18,7 +18,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from cc_mnemos.config import Config
-from cc_mnemos.store import MemoryStore
+from cc_mnemos.store import MemoryStore, StoreStats
 
 logger = logging.getLogger(__name__)
 JsonObject = dict[str, object]
@@ -60,7 +60,7 @@ def _load_config() -> Config:
 # ---------------------------------------------------------------------------
 # テスト用内部ヘルパー (同期)
 # ---------------------------------------------------------------------------
-def _get_stats(config: Config | None = None) -> dict[str, int | dict[str, int]]:
+def _get_stats(config: Config | None = None) -> StoreStats:
     """統計情報を取得する内部ヘルパー"""
     cfg = config if config is not None else _load_config()
     store = MemoryStore(cfg)

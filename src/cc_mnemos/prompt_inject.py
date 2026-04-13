@@ -10,6 +10,7 @@ import json
 import logging
 import socket
 import sys
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from cc_mnemos import project
@@ -41,7 +42,7 @@ _STOP_WORDS = frozenset({
 })
 
 
-def run_prompt_inject(hook_input: dict[str, object], config: Config) -> None:
+def run_prompt_inject(hook_input: Mapping[str, object], config: Config) -> None:
     """ユーザープロンプトに関連する記憶をFTS検索して注入する
 
     例外が発生した場合は何も出力しない（プロンプト送信をブロックしない）
@@ -142,7 +143,7 @@ def _fts_fallback(
     return results
 
 
-def _run_prompt_inject_impl(hook_input: dict[str, object], config: Config) -> None:
+def _run_prompt_inject_impl(hook_input: Mapping[str, object], config: Config) -> None:
     """記憶注入の内部実装"""
     user_prompt = str(hook_input.get("user_prompt", ""))
     if len(user_prompt) < _MIN_QUERY_LEN:
@@ -212,7 +213,7 @@ def _extract_keywords(text: str) -> list[str]:
 
 
 def _format_injection(
-    results: list[dict[str, str | int | float]],
+    results: Sequence[Mapping[str, object]],
     project_name: str,
     search_method: str = "fts",
 ) -> str:
