@@ -6,18 +6,21 @@ import gc
 import hashlib
 import json
 import logging
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from cc_mnemos.chunker import chunk_transcript
+from cc_mnemos.chunker import Chunk, chunk_transcript
+from cc_mnemos.codex_history import NormalizedMessage, NormalizedSession, load_codex_sessions
 from cc_mnemos.project import infer_project_name
 from cc_mnemos.store import MemoryStore
 from cc_mnemos.tagger import assign_tags
 
 if TYPE_CHECKING:
     from cc_mnemos.config import Config
+    from cc_mnemos.config import TagRule
     from cc_mnemos.embedder import Embedder
 
 logger = logging.getLogger(__name__)
@@ -106,8 +109,9 @@ def import_history(
     embedder: Embedder | None = None,
     verbose: bool = True,
     device: str | None = None,
+    agent: str = "claude",
 ) -> dict[str, int]:
-    """既存のClaude Codeセッション履歴を一括インポート
+    """既存セッション履歴を一括インポート
 
     Args:
         config: アプリケーション設定
@@ -117,6 +121,14 @@ def import_history(
     Returns:
         ``{"imported": int, "skipped": int, "errors": int}``
     """
+    if agent == "codex":
+        return _import_codex_history(
+            config,
+            embedder=embedder,
+            verbose=verbose,
+            device=device,
+        )
+
     projects_dir = Path.home() / ".claude" / "projects"
     if not projects_dir.exists():
         if verbose:
@@ -262,4 +274,151 @@ def import_history(
         print()
         print(f"Done: {imported} sessions imported, {errors} errors ({elapsed:.0f}s)")
 
+    return {"imported": imported, "skipped": len(existing), "errors": errors}
+
+
+def _messages_to_chunks(
+    messages: list[NormalizedMessage],
+    max_chars: int,
+    min_chars: int,
+) -> list[Chunk]:
+    normalized_entries = [
+        {"type": "user" if message.role == "user" else "assistant", "content": message.text}
+        for message in messages
+    ]
+
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".jsonl", delete=False) as temp_file:
+        temp_path = Path(temp_file.name)
+        for entry in normalized_entries:
+            temp_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    try:
+        chunks = chunk_transcript(temp_path, max_chars=max_chars, min_chars=min_chars)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    if chunks:
+        return chunks
+
+    user_text = "\n".join(message.text for message in messages if message.role == "user").strip()
+    if len(user_text) < min_chars:
+        return []
+
+    return [Chunk(role_user=user_text, role_assistant="", content=user_text)]
+
+
+def _insert_chunks_for_session(
+    store: MemoryStore,
+    *,
+    session_id: str,
+    project: str,
+    cwd: str,
+    session_time: str,
+    chunks: list[Chunk],
+    embedder: Embedder,
+    tag_rules: dict[str, TagRule],
+) -> None:
+    with store.transaction():
+        store.insert_session(
+            session_id=session_id,
+            project=project,
+            work_dir=cwd,
+            started_at=session_time,
+            ended_at=session_time,
+            commit=False,
+        )
+
+        embeddings = embedder.encode_documents([chunk.content for chunk in chunks])
+        for idx, chunk in enumerate(chunks):
+            tags = assign_tags(
+                chunk.content,
+                tag_rules,
+                keyword_text=chunk.role_user,
+            )
+            chunk_id = hashlib.sha256(
+                f"{session_id}:{chunk.content}".encode()
+            ).hexdigest()
+            chunk_data: dict[str, str | int] = {
+                "id": chunk_id,
+                "session_id": session_id,
+                "role_user": chunk.role_user,
+                "role_assistant": chunk.role_assistant,
+                "content": chunk.content,
+                "tags": json.dumps(tags),
+                "created_at": session_time,
+                "token_count": len(chunk.content),
+            }
+            store.insert_chunk(chunk_data, embeddings[idx], commit=False)
+
+
+def _import_codex_history(
+    config: Config,
+    embedder: Embedder | None = None,
+    verbose: bool = True,
+    device: str | None = None,
+) -> dict[str, int]:
+    codex_dir = Path.home() / ".codex"
+    if not codex_dir.exists():
+        if verbose:
+            print("Codex directory not found")
+        return {"imported": 0, "skipped": 0, "errors": 0}
+
+    sessions = load_codex_sessions(codex_dir)
+    if not sessions:
+        if verbose:
+            print("No new Codex sessions to import")
+        return {"imported": 0, "skipped": 0, "errors": 0}
+
+    store = MemoryStore(config)
+    existing = set(
+        row[0]
+        for row in store.conn.execute("SELECT session_id FROM sessions").fetchall()
+    )
+    pending_sessions = [
+        session for session in sessions if session.session_id not in existing
+    ]
+    if not pending_sessions:
+        if verbose:
+            print("No new sessions to import")
+        store.close()
+        return {"imported": 0, "skipped": len(existing), "errors": 0}
+
+    if embedder is None:
+        from cc_mnemos.embedder import Embedder as EmbedderClass
+
+        embedder = EmbedderClass(config, device=device)
+
+    imported = 0
+    errors = 0
+    tag_rules = config.tag_rules
+
+    for session in pending_sessions:
+        try:
+            chunks = _messages_to_chunks(
+                session.messages,
+                max_chars=config.max_chunk_chars,
+                min_chars=config.min_chunk_chars,
+            )
+            if not chunks:
+                continue
+
+            cwd = session.cwd
+            project = _infer_project(cwd) if cwd else "codex"
+            _insert_chunks_for_session(
+                store,
+                session_id=session.session_id,
+                project=project,
+                cwd=cwd,
+                session_time=session.timestamp,
+                chunks=chunks,
+                embedder=embedder,
+                tag_rules=tag_rules,
+            )
+            imported += 1
+        except Exception:
+            errors += 1
+            if verbose and errors <= 5:
+                logger.exception("  ERROR %s", session.session_id[:30])
+
+    store.close()
     return {"imported": imported, "skipped": len(existing), "errors": errors}

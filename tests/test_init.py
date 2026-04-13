@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from cc_mnemos.cli import run_init
 
@@ -160,3 +161,66 @@ class TestInit:
         assert claude_md_path.exists()
         content = claude_md_path.read_text()
         assert "cc-mnemos" in content
+
+    def test_target_codex_updates_codex_files(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        config_path = codex_dir / "config.toml"
+        config_path.write_text(
+            '[mcp_servers.context7]\nurl = "https://example.com"\n',
+            encoding="utf-8",
+        )
+        agents_path = codex_dir / "AGENTS.md"
+        agents_path.write_text("# Rules\n", encoding="utf-8")
+
+        run_init(target="codex", codex_dir=codex_dir)
+
+        config_text = config_path.read_text(encoding="utf-8")
+        agents_text = agents_path.read_text(encoding="utf-8")
+        assert '[mcp_servers.cc-mnemos]' in config_text
+        assert 'command = ' in config_text
+        assert '[mcp_servers.context7]' in config_text
+        assert "search_memory" in agents_text
+
+    def test_target_auto_updates_detected_targets(self, tmp_path: Path) -> None:
+        home_dir = tmp_path / "home"
+        claude_dir = home_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+        codex_dir = home_dir / ".codex"
+        codex_dir.mkdir()
+        (home_dir / ".claude.json").write_text("{}", encoding="utf-8")
+        (codex_dir / "config.toml").write_text("", encoding="utf-8")
+
+        run_init(home_dir=home_dir, target="auto")
+
+        assert (claude_dir / "settings.json").exists()
+        assert (home_dir / ".claude.json").exists()
+        assert "cc-mnemos" in (codex_dir / "config.toml").read_text(encoding="utf-8")
+
+    def test_codex_agents_update_is_idempotent(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        agents_path = codex_dir / "AGENTS.md"
+        agents_path.write_text("# Rules\n", encoding="utf-8")
+
+        run_init(target="codex", codex_dir=codex_dir)
+        run_init(target="codex", codex_dir=codex_dir)
+
+        content = agents_path.read_text(encoding="utf-8")
+        assert content.count("cc-mnemos") == 1
+
+    def test_init_import_history_runs_selected_target(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "config.toml").write_text("", encoding="utf-8")
+
+        with patch("cc_mnemos.cli.import_history") as import_history_mock:
+            import_history_mock.return_value = {"imported": 0, "skipped": 0, "errors": 0}
+            run_init(
+                target="codex",
+                codex_dir=codex_dir,
+                import_history_enabled=True,
+            )
+
+        import_history_mock.assert_called_once()
+        assert import_history_mock.call_args.kwargs["agent"] == "codex"

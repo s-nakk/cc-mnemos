@@ -1,14 +1,14 @@
 # cc-mnemos
 
-Long-term memory system for Claude Code — automatically saves and retrieves conversation context across sessions.
+Long-term memory system for Claude Code and Codex — automatically saves and retrieves conversation context across sessions.
 
 [日本語](#日本語)
 
 ## Overview
 
-cc-mnemos gives Claude Code persistent memory by:
+cc-mnemos gives Claude Code and Codex persistent memory by:
 
-- Auto-saving conversation chunks when sessions end (via Claude Code Hooks)
+- Auto-saving or importing conversation chunks from local agent history
 - Auto-injecting relevant memories when sessions start
 - On-demand search through an MCP server tool during conversations
 
@@ -26,7 +26,7 @@ All data stays local — no external APIs, no cloud storage. Embeddings are gene
 ## Requirements
 
 - Python 3.10+
-- Claude Code
+- Claude Code / Codex
 - (Recommended) NVIDIA GPU with CUDA for faster embedding
 
 ## Installation
@@ -41,22 +41,23 @@ pip install cc-mnemos
 # 1. Download the embedding model and initialize the database
 cc-mnemos setup
 
-# 2. Register hooks and the MCP server in Claude Code
-cc-mnemos init
+# 2. Register hooks / MCP / guidance for detected agents
+cc-mnemos init --target auto
 
-# 3. (Optional) Import existing Claude Code session history
-cc-mnemos init --import-history
+# 3. (Optional) Import existing Claude/Codex session history
+cc-mnemos init --target auto --import-history
 ```
 
 `cc-mnemos init` updates:
 - `~/.claude/settings.json` for hooks
 - `~/.claude.json` for the `cc-mnemos` MCP server
 - `~/.claude/CLAUDE.md` for memory-search guidance
+- `~/.codex/config.toml` for the `cc-mnemos` MCP server
+- `~/.codex/AGENTS.md` for memory-search guidance
 
 After setup, cc-mnemos works automatically:
-- Session end → conversation is chunked, tagged, embedded, and stored
-- Session start → recent and relevant memories are injected into context
-- During conversation → Claude can call `search_memory` via MCP when needed
+- Claude Code → hooks save conversations, inject memories on session start, and enable MCP search
+- Codex → local history can be imported into the shared store, and `search_memory` is available via MCP
 
 ## Architecture
 
@@ -80,7 +81,7 @@ Pipeline:
 | Command                           | Description                                  |
 |-----------------------------------|----------------------------------------------|
 | `cc-mnemos setup`                 | Download embedding model + initialize DB     |
-| `cc-mnemos init`                  | Register hooks and MCP server in Claude Code |
+| `cc-mnemos init --target auto`    | Register detected Claude/Codex integrations  |
 | `cc-mnemos init --import-history` | Also import existing session history         |
 | `cc-mnemos stats`                 | Show memory statistics                       |
 | `cc-mnemos rebuild`               | Clear DB and re-import all sessions          |
@@ -127,9 +128,9 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 ## 概要
 
-cc-mnemos は Claude Code に長期記憶を与えるシステムです。
+cc-mnemos は Claude Code と Codex に長期記憶を与えるシステムです。
 
-- セッション終了時に会話を 自動保存 (Claude Code Hooks)
+- エージェントのローカル履歴から会話を 自動保存 / インポート
 - セッション開始時に関連する記憶を 自動注入
 - 会話中に MCP ツールで オンデマンド検索
 
@@ -147,7 +148,7 @@ cc-mnemos は Claude Code に長期記憶を与えるシステムです。
 ## 必要要件
 
 - Python 3.10 以上
-- Claude Code
+- Claude Code / Codex
 - (推奨) CUDA 対応 NVIDIA GPU
 
 ## インストール
@@ -162,22 +163,23 @@ pip install cc-mnemos
 # 1. 埋め込みモデルのダウンロードと DB 初期化
 cc-mnemos setup
 
-# 2. Claude Code にフックと MCP サーバーを登録
-cc-mnemos init
+# 2. 検出したエージェント向けに hooks / MCP / ガイダンスを登録
+cc-mnemos init --target auto
 
-# 3. (任意) 既存のセッション履歴をインポート
-cc-mnemos init --import-history
+# 3. (任意) 既存の Claude/Codex セッション履歴をインポート
+cc-mnemos init --target auto --import-history
 ```
 
 `cc-mnemos init` は以下を更新します:
 - `~/.claude/settings.json`: hooks
 - `~/.claude.json`: `cc-mnemos` MCP サーバー
 - `~/.claude/CLAUDE.md`: 記憶検索ルール
+- `~/.codex/config.toml`: `cc-mnemos` MCP サーバー
+- `~/.codex/AGENTS.md`: 記憶検索ルール
 
 セットアップ後は自動で動作します:
-- セッション終了 → 会話がチャンク分割・タグ付け・ベクトル化されて保存
-- セッション開始 → 直近の記憶とよく参照される知見が自動注入
-- 会話中 → Claude が必要に応じて `search_memory` を MCP 経由で呼び出し
+- Claude Code → hooks により会話保存・セッション開始時の記憶注入・MCP 検索が有効になる
+- Codex → ローカル履歴を共有ストアへ取り込みでき、`search_memory` を MCP 経由で利用できる
 
 ## アーキテクチャ
 
@@ -201,7 +203,7 @@ Claude Code
 | コマンド                          | 説明                                       |
 |-----------------------------------|--------------------------------------------|
 | `cc-mnemos setup`                 | 埋め込みモデルのダウンロード + DB 初期化   |
-| `cc-mnemos init`                  | フックと MCP サーバーを Claude Code に登録 |
+| `cc-mnemos init --target auto`    | 検出した Claude/Codex 連携を登録          |
 | `cc-mnemos init --import-history` | 既存セッション履歴もインポート             |
 | `cc-mnemos stats`                 | 記憶の統計情報を表示                       |
 | `cc-mnemos rebuild`               | DB をクリアして全セッション再インポート    |

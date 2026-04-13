@@ -6,16 +6,34 @@
 from __future__ import annotations
 
 import argparse
+from importlib import import_module
 import json
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
+
+from cc_mnemos.batch_import import import_history
 
 if TYPE_CHECKING:
-    pass
+    from cc_mnemos.config import Config
 
 logger = logging.getLogger(__name__)
+
+InitTarget = Literal["auto", "claude", "codex", "all"]
+
+
+class _TomlModule(Protocol):
+    def loads(self, data: str, /) -> dict[str, object]:
+        ...
+
+
+def _load_toml_module() -> _TomlModule:
+    module_name = "tomllib" if sys.version_info >= (3, 11) else "tomli"
+    return cast(_TomlModule, import_module(module_name))
+
+
+_TOML_MODULE = _load_toml_module()
 
 
 HookCommand = TypedDict(
@@ -33,6 +51,18 @@ class HookEntry(TypedDict):
 # CLAUDE.md に追記するテキスト
 # ---------------------------------------------------------------------------
 _CLAUDE_MD_SECTION = """
+## 記憶検索ルール（cc-mnemos）
+
+以下の場面では `search_memory` MCPツールを呼び出すこと:
+1. **UI/UX実装時**: 新しい画面・コンポーネント作成前に、過去のデザイン判断を検索
+2. **スタイル判断時**: コーディングスタイルや命名規則に迷った場合
+3. **技術選定時**: ライブラリ・パターンの選定前に、過去の採用理由を確認
+4. **過去参照の発言時**: 「前に」「以前」「覚えてる」「before」「previously」
+5. **プロジェクト横断時**: 別プロジェクトで得た知見が活きそうな場面
+"""
+
+_CODEX_AGENTS_SECTION = """
+
 ## 記憶検索ルール（cc-mnemos）
 
 以下の場面では `search_memory` MCPツールを呼び出すこと:
@@ -102,8 +132,15 @@ def run_init(
     settings_path: Path | None = None,
     claude_md_path: Path | None = None,
     mcp_config_path: Path | None = None,
+    *,
+    target: InitTarget = "auto",
+    home_dir: Path | None = None,
+    codex_dir: Path | None = None,
+    import_history_enabled: bool = False,
+    config: Config | None = None,
+    device: str | None = None,
 ) -> None:
-    """hooks / MCP 設定を登録し、CLAUDE.md にルールを追記する
+    """対象エージェント向けに hooks / MCP / ルール設定を登録する
 
     Args:
         settings_path: Claude Code settings.json のパス
@@ -112,22 +149,52 @@ def run_init(
         mcp_config_path: Claude Code user config のパス
             (None の場合は ~/.claude.json)
     """
-    # 1. パス解決
-    if settings_path is None:
-        settings_path = Path.home() / ".claude" / "settings.json"
-    if claude_md_path is None:
-        claude_md_path = Path.home() / ".claude" / "CLAUDE.md"
-    if mcp_config_path is None:
-        mcp_config_path = Path.home() / ".claude.json"
+    resolved_home = home_dir if home_dir is not None else Path.home()
+    selected_targets = _resolve_init_targets(target=target, home_dir=resolved_home)
 
-    # 2. settings.json の読み書き
-    _update_settings(settings_path)
-    _update_mcp_config(mcp_config_path)
+    completed_targets: list[str] = []
+    if "claude" in selected_targets:
+        resolved_settings = settings_path or resolved_home / ".claude" / "settings.json"
+        resolved_claude_md = claude_md_path or resolved_home / ".claude" / "CLAUDE.md"
+        resolved_mcp_config = mcp_config_path or resolved_home / ".claude.json"
+        _update_settings(resolved_settings)
+        _update_mcp_config(resolved_mcp_config)
+        _update_claude_md(resolved_claude_md)
+        completed_targets.append("claude")
 
-    # 3. CLAUDE.md の追記
-    _update_claude_md(claude_md_path)
+    if "codex" in selected_targets:
+        resolved_codex_dir = codex_dir or resolved_home / ".codex"
+        _update_codex_config(resolved_codex_dir / "config.toml")
+        _update_codex_agents(resolved_codex_dir / "AGENTS.md")
+        completed_targets.append("codex")
 
-    print("init 完了: settings.json / .claude.json / CLAUDE.md を更新しました")
+    if import_history_enabled:
+        from cc_mnemos.config import Config
+
+        cfg = config if config is not None else Config.load()
+        for selected_target in completed_targets:
+            import_history(cfg, device=device, agent=selected_target, verbose=True)
+
+    joined = ", ".join(completed_targets)
+    print(f"init 完了: {joined} を更新しました")
+
+
+def _resolve_init_targets(target: InitTarget, home_dir: Path) -> list[str]:
+    if target == "claude":
+        return ["claude"]
+    if target == "codex":
+        return ["codex"]
+    if target == "all":
+        return ["claude", "codex"]
+
+    detected_targets: list[str] = []
+    if (home_dir / ".claude").exists():
+        detected_targets.append("claude")
+    if (home_dir / ".codex").exists():
+        detected_targets.append("codex")
+    if not detected_targets:
+        raise ValueError("Claude/Codex の設定ディレクトリが見つかりません")
+    return detected_targets
 
 
 def _resolve_command_path() -> str:
@@ -291,6 +358,38 @@ def _update_claude_md(claude_md_path: Path) -> None:
         f.write(_CLAUDE_MD_SECTION)
 
 
+def _update_codex_config(config_path: Path) -> None:
+    """Codex config.toml に MCP サーバー設定を追記する"""
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    if existing.strip():
+        _TOML_MODULE.loads(existing)
+    if "[mcp_servers.cc-mnemos]" in existing:
+        return
+
+    command = _normalize_path(_resolve_command_path())
+    block = (
+        "\n[mcp_servers.cc-mnemos]\n"
+        f'command = "{command}"\n'
+        'args = ["server"]\n'
+    )
+    new_content = f"{existing.rstrip()}{block}" if existing.strip() else block.lstrip("\n")
+    config_path.write_text(new_content, encoding="utf-8")
+
+
+def _update_codex_agents(agents_path: Path) -> None:
+    """Codex 用 AGENTS.md に記憶検索ルールを追記する"""
+    agents_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = agents_path.read_text(encoding="utf-8") if agents_path.exists() else ""
+    if "cc-mnemos" in existing:
+        return
+
+    new_content = f"{existing.rstrip()}{_CODEX_AGENTS_SECTION}" if existing.strip() else _CODEX_AGENTS_SECTION.lstrip("\n")
+    agents_path.write_text(new_content, encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # setup コマンド
 # ---------------------------------------------------------------------------
@@ -365,15 +464,11 @@ def _handle_server(args: argparse.Namespace) -> None:
 
 def _handle_init(args: argparse.Namespace) -> None:
     """init サブコマンドのハンドラ"""
-    run_init()
-
-    if args.import_history:
-        from cc_mnemos.batch_import import import_history
-        from cc_mnemos.config import Config
-
-        cfg = Config.load()
-        device = "cpu" if args.cpu else None
-        import_history(cfg, device=device)
+    run_init(
+        target=args.target,
+        import_history_enabled=args.import_history,
+        device="cpu" if args.cpu else None,
+    )
 
 
 def _handle_rebuild(args: argparse.Namespace) -> None:
@@ -439,9 +534,11 @@ def _handle_deduplicate(args: argparse.Namespace) -> None:
         print(f"\n修正後: {stats_after['total_chunks']} chunks, "
               f"{stats_after['total_sessions']} sessions")
 
-        reduction = stats_before['total_chunks'] - stats_after['total_chunks']
-        if stats_before['total_chunks'] > 0:
-            pct = reduction / stats_before['total_chunks'] * 100
+        total_before = cast(int, stats_before["total_chunks"])
+        total_after = cast(int, stats_after["total_chunks"])
+        reduction = total_before - total_after
+        if total_before > 0:
+            pct = reduction / total_before * 100
             print(f"削減率: {pct:.1f}% ({reduction} 件削除)")
     finally:
         store.close()
@@ -508,7 +605,7 @@ def main() -> None:
     """CLI のメインエントリポイント"""
     parser = argparse.ArgumentParser(
         prog="cc-mnemos",
-        description="Long-term memory system for Claude Code",
+        description="Long-term memory system for Claude Code and Codex",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -543,12 +640,18 @@ def main() -> None:
     # init
     sub_init = subparsers.add_parser(
         "init",
-        help="hooks / MCP 設定を登録し CLAUDE.md にルールを追記する",
+        help="Claude Code / Codex 向けの hooks / MCP / ルール設定を登録する",
+    )
+    sub_init.add_argument(
+        "--target",
+        choices=("auto", "claude", "codex", "all"),
+        default="auto",
+        help="設定対象のエージェント (デフォルト: auto)",
     )
     sub_init.add_argument(
         "--import-history",
         action="store_true",
-        help="既存のClaude Codeセッション履歴を一括インポートする",
+        help="検出した対象エージェントの既存セッション履歴を一括インポートする",
     )
     sub_init.add_argument(
         "--cpu",

@@ -6,6 +6,7 @@ import json
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -13,6 +14,7 @@ import pytest
 
 from cc_mnemos.batch_import import _read_session_metadata, _resolve_cwd, import_history
 from cc_mnemos.config import Config
+from cc_mnemos.codex_history import load_codex_sessions
 from cc_mnemos.store import MemoryStore
 
 if TYPE_CHECKING:
@@ -121,8 +123,8 @@ class TestImportHistory:
         # DB にセッションとチャンクが保存されていることを確認
         store = MemoryStore(config)
         stats = store.get_stats()
-        assert stats["total_sessions"] == 1
-        assert stats["total_chunks"] >= 1
+        assert cast(int, stats["total_sessions"]) == 1
+        assert cast(int, stats["total_chunks"]) >= 1
         store.close()
 
     def test_skip_already_imported(self, tmp_path: Path) -> None:
@@ -252,3 +254,88 @@ class TestImportHistory:
         assert row[0] == "cc-mnemos"
         assert row[1] == "C:\\projects\\cc-mnemos"
         assert row[2] == "2026-03-25T00:00:00+00:00"
+
+    def test_import_codex_session_history(self, tmp_path: Path) -> None:
+        config = Config(general={"data_dir": str(tmp_path / "data")})
+
+        fake_home = tmp_path / "fakehome"
+        sessions_dir = fake_home / ".codex" / "sessions" / "2026" / "04" / "14"
+        sessions_dir.mkdir(parents=True)
+        shutil.copy(
+            FIXTURES_DIR / "codex_session.jsonl",
+            sessions_dir / "rollout-001.jsonl",
+        )
+
+        mock_embedder = MagicMock()
+        mock_embedder.encode_documents.side_effect = _mock_encode_documents
+
+        with patch("cc_mnemos.batch_import.Path.home") as mock_home:
+            mock_home.return_value = fake_home
+            result = import_history(
+                config,
+                agent="codex",
+                embedder=mock_embedder,
+                verbose=False,
+            )
+
+        assert result["imported"] == 1
+        assert result["errors"] == 0
+
+        store = MemoryStore(config)
+        stats = store.get_stats()
+        row = store.conn.execute(
+            "SELECT project, work_dir FROM sessions WHERE session_id = ?",
+            ("session-codex-001",),
+        ).fetchone()
+        store.close()
+
+        assert cast(int, stats["total_sessions"]) == 1
+        assert cast(int, stats["total_chunks"]) >= 1
+        assert row is not None
+        assert row[0] == "CodexApp"
+        assert row[1] == "C:\\projects\\CodexApp"
+
+    def test_import_codex_history_jsonl_fallback(self, tmp_path: Path) -> None:
+        config = Config(general={"data_dir": str(tmp_path / "data")})
+
+        fake_home = tmp_path / "fakehome"
+        codex_dir = fake_home / ".codex"
+        codex_dir.mkdir(parents=True)
+        shutil.copy(FIXTURES_DIR / "codex_history.jsonl", codex_dir / "history.jsonl")
+
+        mock_embedder = MagicMock()
+        mock_embedder.encode_documents.side_effect = _mock_encode_documents
+
+        with patch("cc_mnemos.batch_import.Path.home") as mock_home:
+            mock_home.return_value = fake_home
+            result = import_history(
+                config,
+                agent="codex",
+                embedder=mock_embedder,
+                verbose=False,
+            )
+
+        assert result["imported"] == 1
+        assert result["errors"] == 0
+
+        store = MemoryStore(config)
+        stats = store.get_stats()
+        store.close()
+
+        assert stats["total_sessions"] == 1
+        assert stats["total_chunks"] == 1
+
+
+class TestCodexHistory:
+    def test_load_codex_sessions_skips_unknown_events(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        sessions_dir = codex_dir / "sessions" / "2026" / "04" / "14"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "unknown.jsonl").write_text(
+            json.dumps({"type": "unknown", "payload": {"foo": "bar"}}) + "\n",
+            encoding="utf-8",
+        )
+
+        sessions = load_codex_sessions(codex_dir)
+
+        assert sessions == []
