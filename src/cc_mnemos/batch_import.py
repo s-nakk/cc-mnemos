@@ -13,14 +13,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cc_mnemos.chunker import Chunk, chunk_transcript
-from cc_mnemos.codex_history import NormalizedMessage, NormalizedSession, load_codex_sessions
+from cc_mnemos.codex_history import NormalizedMessage, load_codex_sessions
 from cc_mnemos.project import infer_project_name
 from cc_mnemos.store import MemoryStore
 from cc_mnemos.tagger import assign_tags
 
 if TYPE_CHECKING:
-    from cc_mnemos.config import Config
-    from cc_mnemos.config import TagRule
+    from cc_mnemos.config import Config, TagRule
     from cc_mnemos.embedder import Embedder
 
 logger = logging.getLogger(__name__)
@@ -204,6 +203,7 @@ def import_history(
                     work_dir=cwd,
                     started_at=session_time,
                     ended_at=session_time,
+                    recorded_source="claude",
                     commit=False,
                 )
 
@@ -287,7 +287,9 @@ def _messages_to_chunks(
         for message in messages
     ]
 
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".jsonl", delete=False) as temp_file:
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", suffix=".jsonl", delete=False
+    ) as temp_file:
         temp_path = Path(temp_file.name)
         for entry in normalized_entries:
             temp_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -317,6 +319,7 @@ def _insert_chunks_for_session(
     chunks: list[Chunk],
     embedder: Embedder,
     tag_rules: dict[str, TagRule],
+    recorded_source: str,
 ) -> None:
     with store.transaction():
         store.insert_session(
@@ -325,6 +328,7 @@ def _insert_chunks_for_session(
             work_dir=cwd,
             started_at=session_time,
             ended_at=session_time,
+            recorded_source=recorded_source,
             commit=False,
         )
 
@@ -413,6 +417,7 @@ def _import_codex_history(
                 chunks=chunks,
                 embedder=embedder,
                 tag_rules=tag_rules,
+                recorded_source="codex",
             )
             imported += 1
         except Exception:

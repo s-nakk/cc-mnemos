@@ -13,6 +13,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 import numpy as np
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class StoreStats(TypedDict):
@@ -45,6 +46,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at TEXT NOT NULL,
     ended_at   TEXT,
     summary    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS session_sources (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+    recorded_source TEXT CHECK(recorded_source IN ('claude', 'codex')),
+    source_classification TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(source_classification IN ('claude', 'codex', 'unknown')),
+    source_classification_confidence TEXT NOT NULL DEFAULT 'low'
+        CHECK(source_classification_confidence IN ('high', 'medium', 'low')),
+    source_classification_reason TEXT NOT NULL DEFAULT '[]',
+    source_classified_at TEXT,
+    source_classified_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
@@ -70,6 +83,23 @@ CREATE INDEX IF NOT EXISTS idx_chunks_created_at
     ON chunks(created_at);
 CREATE INDEX IF NOT EXISTS idx_chunks_tags
     ON chunks(tags);
+CREATE INDEX IF NOT EXISTS idx_session_sources_recorded_source
+    ON session_sources(recorded_source);
+CREATE INDEX IF NOT EXISTS idx_session_sources_classification
+    ON session_sources(source_classification);
+"""
+
+_SESSION_SOURCE_SELECT = """
+    ss.recorded_source AS recorded_source,
+    ss.source_classification AS source_classification,
+    ss.source_classification_confidence AS source_classification_confidence,
+    ss.source_classification_reason AS source_classification_reason,
+    ss.source_classified_at AS source_classified_at,
+    ss.source_classified_by AS source_classified_by,
+    CASE
+        WHEN ss.recorded_source IS NOT NULL THEN ss.recorded_source
+        ELSE COALESCE(ss.source_classification, 'unknown')
+    END AS effective_source
 """
 
 _CREATE_FTS = """
@@ -212,6 +242,11 @@ class MemoryStore:
                     (int_rowid, emb_blob),
                 )
 
+        # v2 → v3: session_sources を追加し既存 session の記録元を推定する
+        if current < 3:
+            logger.info("マイグレーション v2→v3: 既存セッションの記録元を分類します")
+            self.backfill_session_sources(commit=False)
+
         self.conn.execute(
             "UPDATE schema_version SET version = ?", (SCHEMA_VERSION,)
         )
@@ -291,6 +326,7 @@ class MemoryStore:
         started_at: str,
         ended_at: str | None = None,
         summary: str | None = None,
+        recorded_source: str | None = None,
         commit: bool = True,
     ) -> None:
         """セッションレコードを挿入する
@@ -317,8 +353,130 @@ class MemoryStore:
             """,
             (session_id, project, work_dir, started_at, ended_at, summary),
         )
+        if recorded_source is not None:
+            self.upsert_session_source(
+                session_id=session_id,
+                recorded_source=recorded_source,
+                commit=False,
+            )
         if commit:
             self.conn.commit()
+
+    def upsert_session_source(
+        self,
+        *,
+        session_id: str,
+        recorded_source: str | None = None,
+        source_classification: str | None = None,
+        source_classification_confidence: str | None = None,
+        source_classification_reason: list[str] | None = None,
+        source_classified_at: str | None = None,
+        source_classified_by: str | None = None,
+        commit: bool = True,
+    ) -> None:
+        """セッションの記録元メタデータを upsert する"""
+        serialized_reason = (
+            json.dumps(source_classification_reason, ensure_ascii=False)
+            if source_classification_reason is not None
+            else None
+        )
+        self.conn.execute(
+            """
+            INSERT INTO session_sources(
+                session_id,
+                recorded_source,
+                source_classification,
+                source_classification_confidence,
+                source_classification_reason,
+                source_classified_at,
+                source_classified_by
+            ) VALUES(?, ?, COALESCE(?, 'unknown'), COALESCE(?, 'low'), COALESCE(?, '[]'), ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                recorded_source=COALESCE(excluded.recorded_source, session_sources.recorded_source),
+                source_classification=COALESCE(
+                    excluded.source_classification,
+                    session_sources.source_classification
+                ),
+                source_classification_confidence=COALESCE(
+                    excluded.source_classification_confidence,
+                    session_sources.source_classification_confidence
+                ),
+                source_classification_reason=COALESCE(
+                    excluded.source_classification_reason,
+                    session_sources.source_classification_reason
+                ),
+                source_classified_at=COALESCE(
+                    excluded.source_classified_at,
+                    session_sources.source_classified_at
+                ),
+                source_classified_by=COALESCE(
+                    excluded.source_classified_by,
+                    session_sources.source_classified_by
+                )
+            """,
+            (
+                session_id,
+                recorded_source,
+                source_classification,
+                source_classification_confidence,
+                serialized_reason,
+                source_classified_at,
+                source_classified_by,
+            ),
+        )
+        if commit:
+            self.conn.commit()
+
+    def backfill_session_sources(
+        self,
+        *,
+        home_dir: Path | None = None,
+        classifier: str = "heuristic-session-id-v1",
+        commit: bool = True,
+    ) -> int:
+        """既存セッションの記録元を後付け分類する"""
+        from cc_mnemos.source_classifier import (
+            classify_session_source,
+            discover_claude_session_ids,
+            discover_codex_session_ids,
+        )
+
+        resolved_home = home_dir if home_dir is not None else Path.home()
+        claude_session_ids = discover_claude_session_ids(resolved_home)
+        codex_session_ids = discover_codex_session_ids(resolved_home)
+        classified_at = datetime.now(tz=timezone.utc).isoformat()
+
+        rows = self.conn.execute(
+            """
+            SELECT s.session_id, s.work_dir
+            FROM sessions s
+            LEFT JOIN session_sources ss ON ss.session_id = s.session_id
+            WHERE ss.recorded_source IS NULL
+            """
+        ).fetchall()
+
+        updated = 0
+        for row in rows:
+            result = classify_session_source(
+                session_id=str(row["session_id"]),
+                work_dir=str(row["work_dir"]),
+                claude_session_ids=claude_session_ids,
+                codex_session_ids=codex_session_ids,
+            )
+            self.upsert_session_source(
+                session_id=str(row["session_id"]),
+                source_classification=result["source_classification"],
+                source_classification_confidence=result["source_classification_confidence"],
+                source_classification_reason=result["source_classification_reason"],
+                source_classified_at=classified_at,
+                source_classified_by=classifier,
+                commit=False,
+            )
+            updated += 1
+
+        if commit:
+            self.conn.commit()
+        return updated
 
     def insert_chunk(
         self,
@@ -543,7 +701,7 @@ class MemoryStore:
         # vec0 KNNクエリはWHERE句に k=? が必要
         rows = self.conn.execute(
             """
-            SELECT c.*, sub.distance
+            SELECT c.*, sub.distance, """ + _SESSION_SOURCE_SELECT + """
             FROM (
                 SELECT rowid, distance
                 FROM vec_chunks
@@ -551,6 +709,7 @@ class MemoryStore:
             ) sub
             JOIN chunk_vec_map m ON m.rowid_int = sub.rowid
             JOIN chunks c ON c.id = m.chunk_id
+            LEFT JOIN session_sources ss ON ss.session_id = c.session_id
             ORDER BY sub.distance
             """,
             (query_bytes, limit),
@@ -576,9 +735,11 @@ class MemoryStore:
         """
         query = """
             SELECT c.id, c.session_id, c.role_user, c.role_assistant,
-                   c.content, c.tags, c.created_at, c.token_count, c.embedding
+                   c.content, c.tags, c.created_at, c.token_count, c.embedding,
+                   """ + _SESSION_SOURCE_SELECT + """
             FROM chunks c
             JOIN sessions s ON s.session_id = c.session_id
+            LEFT JOIN session_sources ss ON ss.session_id = c.session_id
             WHERE c.embedding IS NOT NULL
         """
         params: list[str] = []
@@ -728,10 +889,11 @@ class MemoryStore:
         project: str | None,
     ) -> list[sqlite3.Row]:
         query = """
-            SELECT c.*, rank
+            SELECT c.*, rank, """ + _SESSION_SOURCE_SELECT + """
             FROM chunks_fts f
             JOIN chunks c ON c.id = f.id
             JOIN sessions s ON s.session_id = c.session_id
+            LEFT JOIN session_sources ss ON ss.session_id = c.session_id
             WHERE chunks_fts MATCH ?
         """
         params: list[str | int] = [match_query]
@@ -750,9 +912,10 @@ class MemoryStore:
         project: str | None,
     ) -> list[sqlite3.Row]:
         query = """
-            SELECT c.*, 0 as rank
+            SELECT c.*, 0 as rank, """ + _SESSION_SOURCE_SELECT + """
             FROM chunks c
             JOIN sessions s ON s.session_id = c.session_id
+            LEFT JOIN session_sources ss ON ss.session_id = c.session_id
             WHERE c.content LIKE ?
         """
         params: list[str | int] = [f"%{token}%"]
@@ -855,26 +1018,38 @@ class MemoryStore:
         """
         if project:
             rows = self.conn.execute(
-                """
-                SELECT c.id, c.session_id, c.role_user, c.role_assistant,
-                       c.content, c.tags, c.created_at, c.token_count
-                FROM chunks c
-                JOIN sessions s ON c.session_id = s.session_id
-                WHERE s.project = ?
-                ORDER BY c.created_at DESC
-                LIMIT ?
-                """,
+                (
+                    """
+                    SELECT c.id, c.session_id, c.role_user, c.role_assistant,
+                           c.content, c.tags, c.created_at, c.token_count,
+                    """
+                    + _SESSION_SOURCE_SELECT
+                    + """
+                    FROM chunks c
+                    JOIN sessions s ON c.session_id = s.session_id
+                    LEFT JOIN session_sources ss ON ss.session_id = c.session_id
+                    WHERE s.project = ?
+                    ORDER BY c.created_at DESC
+                    LIMIT ?
+                    """
+                ),
                 (project, limit),
             ).fetchall()
         else:
             rows = self.conn.execute(
-                """
-                SELECT id, session_id, role_user, role_assistant,
-                       content, tags, created_at, token_count
-                FROM chunks
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
+                (
+                    """
+                    SELECT c.id, c.session_id, c.role_user, c.role_assistant,
+                           c.content, c.tags, c.created_at, c.token_count,
+                    """
+                    + _SESSION_SOURCE_SELECT
+                    + """
+                    FROM chunks c
+                    LEFT JOIN session_sources ss ON ss.session_id = c.session_id
+                    ORDER BY c.created_at DESC
+                    LIMIT ?
+                    """
+                ),
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -911,13 +1086,17 @@ class MemoryStore:
 
         params: list[str | int] = list(exclude_patterns)
 
-        query = f"""
+        query = (
+            f"""
             SELECT c.id, c.session_id, c.role_user, c.role_assistant,
-                   c.content, c.tags, c.created_at, c.token_count
+                   c.content, c.tags, c.created_at, c.token_count,
+            {_SESSION_SOURCE_SELECT}
             FROM chunks c
             JOIN sessions s ON c.session_id = s.session_id
+            LEFT JOIN session_sources ss ON ss.session_id = c.session_id
             WHERE c.tags NOT IN ({placeholders})
-        """
+            """
+        )
 
         if exclude_project:
             query += " AND s.project != ?"

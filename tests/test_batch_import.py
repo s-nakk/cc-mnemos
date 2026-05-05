@@ -12,8 +12,8 @@ import numpy as np
 import pytest
 
 from cc_mnemos.batch_import import _read_session_metadata, _resolve_cwd, import_history
-from cc_mnemos.config import Config
 from cc_mnemos.codex_history import load_codex_sessions
+from cc_mnemos.config import Config
 from cc_mnemos.store import MemoryStore
 
 if TYPE_CHECKING:
@@ -283,7 +283,12 @@ class TestImportHistory:
         store = MemoryStore(config)
         stats = store.get_stats()
         row = store.conn.execute(
-            "SELECT project, work_dir FROM sessions WHERE session_id = ?",
+            """
+            SELECT s.project, s.work_dir, ss.recorded_source
+            FROM sessions s
+            LEFT JOIN session_sources ss ON ss.session_id = s.session_id
+            WHERE s.session_id = ?
+            """,
             ("session-codex-001",),
         ).fetchone()
         store.close()
@@ -293,6 +298,7 @@ class TestImportHistory:
         assert row is not None
         assert row[0] == "CodexApp"
         assert row[1] == "C:\\projects\\CodexApp"
+        assert row[2] == "codex"
 
     def test_import_codex_history_jsonl_fallback(self, tmp_path: Path) -> None:
         config = Config(general={"data_dir": str(tmp_path / "data")})
@@ -319,10 +325,59 @@ class TestImportHistory:
 
         store = MemoryStore(config)
         stats = store.get_stats()
+        row = store.conn.execute(
+            """
+            SELECT recorded_source
+            FROM session_sources
+            WHERE session_id = ?
+            """,
+            ("session-codex-history-001",),
+        ).fetchone()
         store.close()
 
         assert stats["total_sessions"] == 1
         assert stats["total_chunks"] == 1
+        assert row is not None
+        assert row[0] == "codex"
+
+    def test_import_claude_history_persists_recorded_source(self, tmp_path: Path) -> None:
+        config = Config(general={"data_dir": str(tmp_path / "data")})
+
+        fake_home = tmp_path / "fakehome"
+        projects_dir = fake_home / ".claude" / "projects" / "c--projects-TestApp"
+        projects_dir.mkdir(parents=True)
+        shutil.copy(
+            FIXTURES_DIR / "sample_transcript.jsonl",
+            projects_dir / "session-claude-001.jsonl",
+        )
+
+        mock_embedder = MagicMock()
+        mock_embedder.encode_documents.side_effect = _mock_encode_documents
+
+        with patch("cc_mnemos.batch_import.Path.home") as mock_home:
+            mock_home.return_value = fake_home
+            result = import_history(
+                config,
+                agent="claude",
+                embedder=mock_embedder,
+                verbose=False,
+            )
+
+        assert result["imported"] == 1
+
+        store = MemoryStore(config)
+        row = store.conn.execute(
+            """
+            SELECT recorded_source
+            FROM session_sources
+            WHERE session_id = ?
+            """,
+            ("session-claude-001",),
+        ).fetchone()
+        store.close()
+
+        assert row is not None
+        assert row[0] == "claude"
 
 
 class TestCodexHistory:

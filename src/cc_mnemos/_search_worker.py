@@ -61,6 +61,9 @@ def _handle_client(
         request = json.loads(data.decode("utf-8"))
         if not isinstance(request, dict):
             raise ValueError("request payload must be an object")
+        if request.get("type") == "ping":
+            conn.sendall(json.dumps({"ok": True}).encode("utf-8"))
+            return
         query = request.get("query")
         if not isinstance(query, str):
             raise ValueError("query must be a string")
@@ -92,9 +95,6 @@ def run_daemon(port: int) -> None:
     from cc_mnemos.config import Config
     from cc_mnemos.embedder import Embedder
 
-    config = Config.load()
-    embedder = Embedder(config)
-
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if sys.platform == "win32":
         # Windowsでは SO_REUSEADDR が既存リスナーへの重複bindを許可してしまう
@@ -104,6 +104,9 @@ def run_daemon(port: int) -> None:
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", port))
     srv.listen(5)
+
+    config = Config.load()
+    embedder = Embedder(config)
 
     while True:
         conn, _ = srv.accept()

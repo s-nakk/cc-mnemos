@@ -9,6 +9,10 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from cc_mnemos import project
+from cc_mnemos.search_worker_control import (
+    is_search_worker_listening,
+    start_search_worker_process,
+)
 from cc_mnemos.store import MemoryStore
 
 if TYPE_CHECKING:
@@ -25,6 +29,7 @@ _REMINDER = (
 # recall 出力のトランケート上限（プロンプトキャッシュの破壊面積を抑えるため）
 _USER_MSG_MAX_LENGTH = 150
 _ASSISTANT_MSG_MAX_LENGTH = 250
+_WORKER_RECALL_CHECK_TIMEOUT_SECONDS = 0.2
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -146,20 +151,15 @@ def _run_recall_impl(hook_input: Mapping[str, object], config: Config) -> None:
     sys.stdout.write(output)
 
     # 5. MCP search_memory用のデーモンワーカーをバックグラウンドで起動
-    import subprocess
     import threading
-    from pathlib import Path
 
     def _start_worker() -> None:
         try:
-            python = sys.executable
-            worker = str(Path(__file__).parent / "_search_worker.py")
-            subprocess.Popen(
-                [python, worker, "--daemon", "19836"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+            if is_search_worker_listening(
+                timeout_seconds=_WORKER_RECALL_CHECK_TIMEOUT_SECONDS
+            ):
+                return
+            start_search_worker_process()
         except Exception:  # noqa: BLE001
             pass
 

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import pytest
 from conftest import make_chunk, make_session_id
 
 from cc_mnemos.config import Config
@@ -116,3 +117,29 @@ class TestListProjects:
 
         projects = _list_projects(config=config)
         assert projects == []
+
+
+class TestEnsureWorker:
+    def test_existing_listener_without_ready_response_does_not_spawn_duplicate(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from cc_mnemos import server
+
+        def unavailable() -> bool:
+            return False
+
+        def listening() -> bool:
+            return True
+
+        def fail_start(*, port: int) -> None:
+            raise AssertionError("should not start duplicate worker while port is bound")
+
+        monkeypatch.setattr(server, "_worker_started", False)
+        monkeypatch.setattr(server, "_WORKER_STARTUP_WAIT_SECONDS", 0.001)
+        monkeypatch.setattr(server, "_WORKER_STARTUP_POLL_SECONDS", 0.001)
+        monkeypatch.setattr(server, "is_search_worker_available", unavailable)
+        monkeypatch.setattr(server, "is_search_worker_listening", listening)
+        monkeypatch.setattr(server, "start_search_worker_process", fail_start)
+
+        assert server._ensure_worker() is False

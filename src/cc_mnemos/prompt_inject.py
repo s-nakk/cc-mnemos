@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from cc_mnemos import project
+from cc_mnemos.search_worker_control import WORKER_HOST, WORKER_PORT
 from cc_mnemos.store import MemoryStore
 
 if TYPE_CHECKING:
@@ -26,9 +27,6 @@ _MIN_CONTENT_LEN = 30
 
 # 検索対象から除外する短いプロンプト
 _MIN_QUERY_LEN = 5
-
-# search workerデーモンのポート
-_WORKER_PORT = 19836
 
 # workerへの接続タイムアウト（秒） — hookの5秒制限内に収める
 _WORKER_TIMEOUT = 3.0
@@ -84,7 +82,7 @@ def _query_worker(
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(_WORKER_TIMEOUT)
-        sock.connect(("127.0.0.1", _WORKER_PORT))
+        sock.connect((WORKER_HOST, WORKER_PORT))
         sock.sendall(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
         sock.shutdown(socket.SHUT_WR)
 

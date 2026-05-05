@@ -101,6 +101,7 @@ def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
                 project=project_name,
                 work_dir=cwd,
                 started_at=now,
+                recorded_source="claude",
                 commit=False,
             )
 

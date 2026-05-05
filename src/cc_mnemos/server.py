@@ -18,6 +18,13 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from cc_mnemos.config import Config
+from cc_mnemos.search_worker_control import (
+    WORKER_HOST,
+    WORKER_PORT,
+    is_search_worker_available,
+    is_search_worker_listening,
+    start_search_worker_process,
+)
 from cc_mnemos.store import MemoryStore, StoreStats
 
 logger = logging.getLogger(__name__)
@@ -110,50 +117,45 @@ def _coerce_limit(value: object, default: int = 10) -> int:
 # ---------------------------------------------------------------------------
 # 同期検索の実装 (スレッドプールで実行される)
 # ---------------------------------------------------------------------------
-_WORKER_PORT = 19836
+_WORKER_STARTUP_WAIT_SECONDS = 30.0
+_WORKER_STARTUP_POLL_SECONDS = 0.5
+_WORKER_REQUEST_TIMEOUT_SECONDS = 30.0
+_WORKER_COMMUNICATION_ATTEMPTS = 2
 _worker_started = False
 
 
-def _ensure_worker() -> None:
+def _ensure_worker() -> bool:
     """検索ワーカーデーモンが起動していなければ起動する"""
     global _worker_started  # noqa: PLW0603
-    if _worker_started:
-        return
+    if _worker_started and is_search_worker_available():
+        return True
 
-    import socket
-    import subprocess
-    import sys
-    from pathlib import Path
+    _worker_started = False
 
-    # 既にリスニングしているか確認
-    try:
-        with socket.create_connection(("127.0.0.1", _WORKER_PORT), timeout=1):
-            _worker_started = True
-            return
-    except (ConnectionRefusedError, TimeoutError, OSError):
-        pass
+    # 既に検索可能ならそのまま使う
+    if is_search_worker_available():
+        _worker_started = True
+        return True
 
-    # ワーカーを起動
-    python = sys.executable
-    worker = str(Path(__file__).parent / "_search_worker.py")
-    subprocess.Popen(
-        [python, worker, "--daemon", str(_WORKER_PORT)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    # 待受中ならロード完了を待つ。未起動の場合だけ新規起動する
+    if not is_search_worker_listening():
+        start_search_worker_process(port=WORKER_PORT)
 
-    # 起動を待機（最大30秒）
+    # 起動を待機
     import time
-    for _ in range(60):
-        try:
-            with socket.create_connection(("127.0.0.1", _WORKER_PORT), timeout=1):
-                _worker_started = True
-                return
-        except (ConnectionRefusedError, TimeoutError, OSError):
-            time.sleep(0.5)
 
-    logger.error("search worker failed to start within 30 seconds")
+    deadline = time.monotonic() + _WORKER_STARTUP_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if is_search_worker_available():
+            _worker_started = True
+            return True
+        time.sleep(_WORKER_STARTUP_POLL_SECONDS)
+
+    logger.error(
+        "search worker failed to start within %.1f seconds",
+        _WORKER_STARTUP_WAIT_SECONDS,
+    )
+    return False
 
 
 def _search_memory_sync(
@@ -166,7 +168,8 @@ def _search_memory_sync(
     global _worker_started  # noqa: PLW0603
     import socket
 
-    _ensure_worker()
+    if not _ensure_worker():
+        return []
 
     request = json.dumps({
         "query": query,
@@ -175,9 +178,12 @@ def _search_memory_sync(
         "limit": limit,
     })
 
-    for attempt in range(2):
+    for attempt in range(_WORKER_COMMUNICATION_ATTEMPTS):
         try:
-            with socket.create_connection(("127.0.0.1", _WORKER_PORT), timeout=30) as sock:
+            with socket.create_connection(
+                (WORKER_HOST, WORKER_PORT),
+                timeout=_WORKER_REQUEST_TIMEOUT_SECONDS,
+            ) as sock:
                 sock.sendall(request.encode("utf-8") + b"\n")
                 # レスポンスを読み取り
                 chunks: list[bytes] = []
@@ -189,12 +195,13 @@ def _search_memory_sync(
                 response = b"".join(chunks).decode("utf-8")
                 return _decode_search_results(response)
         except Exception:  # noqa: BLE001
-            if attempt == 0:
-                logger.warning("search worker communication failed, restarting worker")
+            if attempt < _WORKER_COMMUNICATION_ATTEMPTS - 1:
+                logger.warning("search worker communication failed, checking readiness")
                 _worker_started = False
-                _ensure_worker()
+                if not _ensure_worker():
+                    break
             else:
-                logger.exception("search worker communication failed after restart")
+                logger.exception("search worker communication failed after retry")
     return []
 
 
@@ -288,10 +295,6 @@ async def handle_call_tool(name: str, arguments: JsonObject) -> list[TextContent
 # ---------------------------------------------------------------------------
 async def _run_server_async() -> None:
     """MCPサーバーを非同期で起動する"""
-    # ワーカーデーモンをバックグラウンドで起動開始
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, _ensure_worker)
-
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 

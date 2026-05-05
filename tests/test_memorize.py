@@ -23,6 +23,16 @@ class TestMemorizePipeline:
         store = MemoryStore(config)
         stats = store.get_stats()
         assert stats["total_chunks"] >= 2
+        source_row = store.conn.execute(
+            """
+            SELECT recorded_source
+            FROM session_sources
+            WHERE session_id = ?
+            """,
+            ("test-session-001",),
+        ).fetchone()
+        assert source_row is not None
+        assert source_row[0] == "claude"
         store.close()
 
     def test_skips_when_stop_hook_active(self, tmp_path: Path) -> None:

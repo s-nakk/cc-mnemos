@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import numpy as np
 from conftest import make_chunk, make_session_id
 
+from cc_mnemos.config import Config
 from cc_mnemos.store import MemoryStore
 
 
@@ -16,6 +18,7 @@ class TestSchemaInit:
         ).fetchall()
         table_names = {row[0] for row in tables}
         assert "sessions" in table_names
+        assert "session_sources" in table_names
         assert "chunks" in table_names
         assert "schema_version" in table_names
 
@@ -33,12 +36,24 @@ class TestInsertAndQuery:
             work_dir="/tmp/test",
             started_at=datetime.now(tz=timezone.utc).isoformat(),
             ended_at=datetime.now(tz=timezone.utc).isoformat(),
+            recorded_source="claude",
         )
         chunk = make_chunk(session_id)
         embedding = np.random.rand(768).astype(np.float32)
         store.insert_chunk(chunk, embedding)
         count = store.conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         assert count == 1
+
+        source_row = store.conn.execute(
+            """
+            SELECT recorded_source
+            FROM session_sources
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        assert source_row is not None
+        assert source_row[0] == "claude"
 
     def test_fts_search(self, store: MemoryStore) -> None:
         session_id = make_session_id()
@@ -48,12 +63,90 @@ class TestInsertAndQuery:
             work_dir="/tmp",
             started_at=datetime.now(tz=timezone.utc).isoformat(),
             ended_at=datetime.now(tz=timezone.utc).isoformat(),
+            recorded_source="codex",
         )
         chunk = make_chunk(session_id, role_user="border-radiusの設定")
         embedding = np.random.rand(768).astype(np.float32)
         store.insert_chunk(chunk, embedding)
         results = store.fts_search("border-radius", limit=5)
         assert len(results) >= 1
+        assert results[0]["effective_source"] == "codex"
+
+    def test_backfill_classifies_existing_sessions_from_agent_history(self, tmp_path: Path) -> None:
+        config = Config(general={"data_dir": str(tmp_path / "data")})
+        store = MemoryStore(config)
+
+        claude_session_id = "claude-session-001"
+        codex_session_id = "session-codex-001"
+        started_at = datetime.now(tz=timezone.utc).isoformat()
+
+        store.insert_session(
+            session_id=claude_session_id,
+            project="claude-project",
+            work_dir="C:/projects/claude-project",
+            started_at=started_at,
+        )
+        store.insert_session(
+            session_id=codex_session_id,
+            project="codex-project",
+            work_dir="C:/projects/codex-project",
+            started_at=started_at,
+        )
+
+        fake_home = tmp_path / "fakehome"
+        claude_projects_dir = fake_home / ".claude" / "projects" / "c--projects-TestApp"
+        claude_projects_dir.mkdir(parents=True)
+        (claude_projects_dir / f"{claude_session_id}.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"content": "Claude transcript"}}) + "\n",
+            encoding="utf-8",
+        )
+
+        codex_sessions_dir = fake_home / ".codex" / "sessions" / "2026" / "04" / "14"
+        codex_sessions_dir.mkdir(parents=True)
+        (codex_sessions_dir / "rollout-001.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "session_meta",
+                            "payload": {
+                                "id": codex_session_id,
+                                "timestamp": "2026-04-14T10:00:00.000Z",
+                                "cwd": "C:\\projects\\CodexApp",
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "Codex transcript"}],
+                            },
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        classified = store.backfill_session_sources(home_dir=fake_home)
+
+        assert classified == 2
+
+        rows = store.conn.execute(
+            """
+            SELECT session_id, source_classification, source_classification_confidence
+            FROM session_sources
+            ORDER BY session_id
+            """
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [
+            (claude_session_id, "claude", "high"),
+            (codex_session_id, "codex", "high"),
+        ]
 
 
 class TestHybridSearch:

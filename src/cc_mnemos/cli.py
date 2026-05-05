@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import argparse
-from importlib import import_module
 import json
 import logging
+import re
 import sys
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
 
@@ -204,17 +205,17 @@ def _resolve_command_path() -> str:
     """
     import shutil
 
-    # 1. shutil.which で探す（PATHに含まれている場合）
-    found = shutil.which("cc-mnemos")
-    if found:
-        return found
-
-    # 2. 現在のPythonと同じ環境の Scripts/bin を探す
+    # 1. 現在のPythonと同じ環境の Scripts/bin を優先する
     scripts_dir = Path(sys.executable).parent
     for name in ("cc-mnemos.exe", "cc-mnemos"):
         candidate = scripts_dir / name
         if candidate.exists():
             return str(candidate)
+
+    # 2. PATH に含まれる場合はそれを使う
+    found = shutil.which("cc-mnemos")
+    if found:
+        return found
 
     # 3. フォールバック: そのまま返す（ユーザーがPATHに追加する前提）
     return "cc-mnemos"
@@ -359,14 +360,12 @@ def _update_claude_md(claude_md_path: Path) -> None:
 
 
 def _update_codex_config(config_path: Path) -> None:
-    """Codex config.toml に MCP サーバー設定を追記する"""
+    """Codex config.toml に MCP サーバー設定をマージする"""
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
     if existing.strip():
         _TOML_MODULE.loads(existing)
-    if "[mcp_servers.cc-mnemos]" in existing:
-        return
 
     command = _normalize_path(_resolve_command_path())
     block = (
@@ -374,7 +373,15 @@ def _update_codex_config(config_path: Path) -> None:
         f'command = "{command}"\n'
         'args = ["server"]\n'
     )
-    new_content = f"{existing.rstrip()}{block}" if existing.strip() else block.lstrip("\n")
+    section_pattern = re.compile(
+        r"(?ms)^\[mcp_servers\.cc-mnemos\]\n.*?(?=^\[|\Z)"
+    )
+
+    if section_pattern.search(existing):
+        replacement = block.lstrip("\n")
+        new_content = section_pattern.sub(f"{replacement}\n", existing).rstrip() + "\n"
+    else:
+        new_content = f"{existing.rstrip()}{block}" if existing.strip() else block.lstrip("\n")
     config_path.write_text(new_content, encoding="utf-8")
 
 
@@ -386,7 +393,11 @@ def _update_codex_agents(agents_path: Path) -> None:
     if "cc-mnemos" in existing:
         return
 
-    new_content = f"{existing.rstrip()}{_CODEX_AGENTS_SECTION}" if existing.strip() else _CODEX_AGENTS_SECTION.lstrip("\n")
+    new_content = (
+        f"{existing.rstrip()}{_CODEX_AGENTS_SECTION}"
+        if existing.strip()
+        else _CODEX_AGENTS_SECTION.lstrip("\n")
+    )
     agents_path.write_text(new_content, encoding="utf-8")
 
 
@@ -520,7 +531,7 @@ def _handle_deduplicate(args: argparse.Namespace) -> None:
         # 1. プロジェクト名の正規化
         renames = store.normalize_project_names()
         if renames:
-            print(f"\nプロジェクト名を統一しました:")
+            print("\nプロジェクト名を統一しました:")
             for old, new in renames.items():
                 print(f"  {old} → {new}")
         else:
@@ -589,9 +600,21 @@ def _handle_search(args: argparse.Namespace) -> None:
             tags_str = str(result.get("tags", "[]"))
             content = str(result.get("content", ""))
             created_at = str(result.get("created_at", ""))
+            effective_source = str(result.get("effective_source", "unknown"))
+            recorded_source = result.get("recorded_source")
+            confidence = result.get("source_classification_confidence")
+            if isinstance(recorded_source, str) and recorded_source:
+                source_label = f"{effective_source} (recorded)"
+            elif isinstance(confidence, str) and confidence:
+                source_label = f"{effective_source} (inferred:{confidence})"
+            else:
+                source_label = effective_source
             # 長いコンテンツは先頭200文字に切り詰め
             preview = content[:200] + ("..." if len(content) > 200 else "")
-            print(f"[{i}] score={score:.4f} tags={tags_str} ({created_at})")
+            print(
+                f"[{i}] score={score:.4f} source={source_label} "
+                f"tags={tags_str} ({created_at})"
+            )
             print(f"    {preview}")
             print()
     finally:

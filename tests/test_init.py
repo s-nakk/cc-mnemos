@@ -6,10 +6,24 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from cc_mnemos.cli import run_init
+from cc_mnemos.cli import _resolve_command_path, run_init
 
 
 class TestInit:
+    def test_resolve_command_path_prefers_current_python_environment(self, tmp_path: Path) -> None:
+        scripts_dir = tmp_path / ".venv" / "Scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "python.exe").write_text("", encoding="utf-8")
+        (scripts_dir / "cc-mnemos.exe").write_text("", encoding="utf-8")
+
+        with (
+            patch("cc_mnemos.cli.sys.executable", str(scripts_dir / "python.exe")),
+            patch("shutil.which", return_value="C:\\legacy\\cc-mnemos.exe"),
+        ):
+            resolved = _resolve_command_path()
+
+        assert resolved == str(scripts_dir / "cc-mnemos.exe")
+
     def test_creates_hooks_in_settings(self, tmp_path: Path) -> None:
         settings_path = tmp_path / "settings.json"
         settings_path.write_text("{}")
@@ -208,6 +222,36 @@ class TestInit:
 
         content = agents_path.read_text(encoding="utf-8")
         assert content.count("cc-mnemos") == 1
+
+    def test_target_codex_updates_existing_cc_mnemos_mcp_server(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        config_path = codex_dir / "config.toml"
+        config_path.write_text(
+            '\n'.join(
+                [
+                    '[mcp_servers.context7]',
+                    'url = "https://example.com"',
+                    '',
+                    '[mcp_servers.cc-mnemos]',
+                    'command = "C:/legacy/cc-mnemos.exe"',
+                    'args = ["server"]',
+                    '',
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with patch(
+            "cc_mnemos.cli._resolve_command_path",
+            return_value="C:\\projects\\cc-mnemos\\.venv\\Scripts\\cc-mnemos.exe",
+        ):
+            run_init(target="codex", codex_dir=codex_dir)
+
+        config_text = config_path.read_text(encoding="utf-8")
+        assert '[mcp_servers.context7]' in config_text
+        assert 'command = "C:/projects/cc-mnemos/.venv/Scripts/cc-mnemos.exe"' in config_text
+        assert 'command = "C:/legacy/cc-mnemos.exe"' not in config_text
 
     def test_init_import_history_runs_selected_target(self, tmp_path: Path) -> None:
         codex_dir = tmp_path / ".codex"
