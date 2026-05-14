@@ -96,9 +96,15 @@ def _dispatch_memorize_request(
 ) -> bytes:
     """memorize リクエストをキューに積み、ack バイト列を返す
 
+    同一 ``session_id`` の未処理ジョブが既にキューに居る場合、それを上書きして
+    再投入数を 1 件に抑える。memorize は「セッションの最新トランスクリプトで
+    全置換」する性質なので、古い同セッションのジョブを処理しても結果は最新
+    ジョブで上書きされるだけ。Stop hook が連発するシナリオで CPU/RAM が
+    線形に膨らむのを防ぐための重要な最適化
+
     Args:
         request: クライアントが送ってきたペイロード
-        memorize_queue: memorize ジョブ用のキュー。未起動状態 (None) ならエラー
+        memorize_queue: memorize ジョブ用のキュー (未起動状態 ``None`` ならエラー)
         memorize_alive: memorize worker thread の生存フラグ
     """
     if memorize_queue is None or memorize_alive is None or not memorize_alive.is_set():
@@ -107,6 +113,23 @@ def _dispatch_memorize_request(
     chunks = request.get("chunks")
     if not isinstance(chunks, list):
         return json.dumps({"ok": False, "error": "invalid_payload"}).encode("utf-8")
+
+    session_id_raw = request.get("session_id")
+    new_session_id = str(session_id_raw) if session_id_raw else ""
+
+    # 同一 session_id の未処理ジョブがあれば上書き (CPython の Queue 内部 deque を触る)
+    if new_session_id:
+        with memorize_queue.mutex:
+            internal_deque = memorize_queue.queue
+            for index, item in enumerate(internal_deque):
+                if (
+                    isinstance(item, dict)
+                    and str(item.get("session_id", "")) == new_session_id
+                ):
+                    internal_deque[index] = request
+                    return json.dumps(
+                        {"ok": True, "queued": len(chunks), "deduped": True},
+                    ).encode("utf-8")
 
     try:
         memorize_queue.put_nowait(request)

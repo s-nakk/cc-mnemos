@@ -205,6 +205,58 @@ class TestMemorizeDispatch:
         payload = json.loads(response.decode("utf-8"))
         assert payload == {"ok": False, "error": "worker_not_ready"}
 
+    def test_memorize_request_deduplicates_same_session(self) -> None:
+        """同一 session_id のジョブはキュー上で上書きされる"""
+        from cc_mnemos import _search_worker
+
+        q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=10)
+        alive = threading.Event()
+        alive.set()
+
+        first = {
+            "type": "memorize",
+            "session_id": "s-dup",
+            "chunks": [{"content": "old"}],
+        }
+        second = {
+            "type": "memorize",
+            "session_id": "s-dup",
+            "chunks": [{"content": "new1"}, {"content": "new2"}],
+        }
+
+        r1 = _search_worker._dispatch_memorize_request(first, q, alive)
+        r2 = _search_worker._dispatch_memorize_request(second, q, alive)
+
+        p1 = json.loads(r1.decode("utf-8"))
+        p2 = json.loads(r2.decode("utf-8"))
+        assert p1.get("ok") is True
+        assert p2.get("ok") is True
+        assert p2.get("deduped") is True
+        # キューに 1 件しか存在しない
+        assert q.qsize() == 1
+        item = q.get_nowait()
+        assert item is second  # 上書きされた最新ジョブ
+
+    def test_memorize_request_keeps_different_sessions_separate(self) -> None:
+        """異なる session_id は別ジョブとして両方キューに入る"""
+        from cc_mnemos import _search_worker
+
+        q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=10)
+        alive = threading.Event()
+        alive.set()
+
+        _search_worker._dispatch_memorize_request(
+            {"type": "memorize", "session_id": "s-a", "chunks": [{"content": "a"}]},
+            q,
+            alive,
+        )
+        _search_worker._dispatch_memorize_request(
+            {"type": "memorize", "session_id": "s-b", "chunks": [{"content": "b"}]},
+            q,
+            alive,
+        )
+        assert q.qsize() == 2
+
 
 # ---------------------------------------------------------------------------
 # _handle_client 経由の memorize 受領 (socketpair 経由)
