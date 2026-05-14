@@ -189,6 +189,21 @@ class TestExtractSessionStartedAt:
         )
         assert _extract_session_started_at(transcript) == "2026-03-25T03:00:00+00:00"
 
+    def test_lone_z_timestamp_is_returned_as_is(self, tmp_path: Path) -> None:
+        """``"Z"`` 一文字の不正な timestamp に対して ``"+00:00"`` を返さない
+
+        Z だけの値に対して ``ts[:-1]`` を適用すると ``""`` になり、結果が
+        ``"+00:00"`` という壊れた timestamp になってしまう。長さガードで
+        Z 正規化を回避し、生の値を返すことで「壊れた timestamp は壊れたまま」
+        後段に渡す
+        """
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            json.dumps({"type": "user", "timestamp": "Z"}) + "\n",
+            encoding="utf-8",
+        )
+        assert _extract_session_started_at(transcript) == "Z"
+
 
 # ---------------------------------------------------------------------------
 # stop_hook_active / transcript 不在では worker への接続も試みない

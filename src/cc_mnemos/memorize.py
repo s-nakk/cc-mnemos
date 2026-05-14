@@ -16,6 +16,7 @@ import logging
 import socket
 import uuid
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -58,7 +59,9 @@ def _extract_session_started_at(transcript_path: Path) -> str | None:
                     continue
                 ts = entry.get("timestamp")
                 if isinstance(ts, str) and ts:
-                    return f"{ts[:-1]}+00:00" if ts.endswith("Z") else ts
+                    if ts.endswith("Z") and len(ts) > 1:
+                        return f"{ts[:-1]}+00:00"
+                    return ts
     except OSError:
         return None
     return None
@@ -104,7 +107,9 @@ def _run_memorize_impl(hook_input: Mapping[str, object], config: Config) -> None
     cwd = str(hook_input.get("cwd", "."))
     project_name = project.infer_project_name(cwd, config)
     session_id = str(hook_input.get("session_id") or uuid.uuid4().hex)
-    started_at = _extract_session_started_at(transcript_path)
+    started_at = _extract_session_started_at(transcript_path) or datetime.now(
+        tz=timezone.utc
+    ).isoformat()
 
     tag_rules = config.tag_rules
     chunk_payload: list[dict[str, Any]] = []
@@ -126,10 +131,9 @@ def _run_memorize_impl(hook_input: Mapping[str, object], config: Config) -> None
         "session_id": session_id,
         "project": project_name,
         "work_dir": cwd,
+        "started_at": started_at,
         "chunks": chunk_payload,
     }
-    if started_at is not None:
-        payload["started_at"] = started_at
 
     if _try_send_to_worker(payload):
         logger.info(
@@ -195,7 +199,7 @@ def _persist_in_process(
     cwd: str,
     chunk_payload: list[dict[str, Any]],
     config: Config,
-    started_at: str | None = None,
+    started_at: str,
 ) -> None:
     """worker 不在時の in-process フォールバック
 

@@ -18,6 +18,7 @@ import queue
 import socket
 import sys
 import threading
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
@@ -199,7 +200,11 @@ def _persist_memorize_request(
     project_name = str(request.get("project", ""))
     work_dir = str(request.get("work_dir", ""))
     started_at_raw = request.get("started_at")
-    started_at = str(started_at_raw) if isinstance(started_at_raw, str) and started_at_raw else None
+    started_at = (
+        str(started_at_raw)
+        if isinstance(started_at_raw, str) and started_at_raw
+        else datetime.now(tz=timezone.utc).isoformat()
+    )
     chunks_raw = request.get("chunks", [])
     if not isinstance(chunks_raw, list):
         return
