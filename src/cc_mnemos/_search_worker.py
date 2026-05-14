@@ -198,6 +198,8 @@ def _persist_memorize_request(
 
     project_name = str(request.get("project", ""))
     work_dir = str(request.get("work_dir", ""))
+    started_at_raw = request.get("started_at")
+    started_at = str(started_at_raw) if isinstance(started_at_raw, str) and started_at_raw else None
     chunks_raw = request.get("chunks", [])
     if not isinstance(chunks_raw, list):
         return
@@ -228,6 +230,7 @@ def _persist_memorize_request(
         chunk_records=chunk_records,
         embedder=embedder,
         store=store,
+        started_at=started_at,
     )
 
 

@@ -15,7 +15,7 @@ import pytest
 from conftest import FakeSocket
 
 from cc_mnemos.config import Config
-from cc_mnemos.memorize import run_memorize
+from cc_mnemos.memorize import _extract_session_started_at, run_memorize
 from cc_mnemos.store import MemoryStore
 
 if TYPE_CHECKING:
@@ -87,6 +87,107 @@ class TestMemorizePipeline:
             "stop_hook_active": False,
         }
         run_memorize(hook_input, config)  # クラッシュしないこと
+
+    def test_started_at_from_transcript_is_persisted(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """transcript JSONL の最初のメッセージ timestamp が sessions.started_at に保存される
+
+        worker 不在 → in-process フォールバック経路で、JSONL 先頭の timestamp が
+        会話開始時刻として正しく伝搬することを確認する (Item 1)
+        """
+        monkeypatch.setattr(
+            "cc_mnemos.memorize.search_worker_control.ensure_worker",
+            lambda **_: False,
+        )
+
+        transcript_path = tmp_path / "transcript.jsonl"
+        transcript_path.write_text(
+            "\n".join([
+                json.dumps({
+                    "type": "user",
+                    "timestamp": "2026-01-15T08:30:00Z",
+                    "message": {"content": "border-radius の設定方法を教えて"},
+                }, ensure_ascii=False),
+                json.dumps({
+                    "type": "assistant",
+                    "timestamp": "2026-01-15T08:30:05Z",
+                    "message": {"content": "CSS の border-radius で角丸を設定できます"},
+                }, ensure_ascii=False),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        config = Config(general={"data_dir": str(tmp_path / "data")})
+        hook_input = {
+            "session_id": "test-session-started-at",
+            "transcript_path": str(transcript_path),
+            "cwd": str(tmp_path),
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+        }
+        run_memorize(hook_input, config)
+
+        store = MemoryStore(config)
+        try:
+            row = store.conn.execute(
+                "SELECT started_at FROM sessions WHERE session_id = ?",
+                ("test-session-started-at",),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "2026-01-15T08:30:00+00:00"
+        finally:
+            store.close()
+
+
+class TestExtractSessionStartedAt:
+    """_extract_session_started_at の単体テスト"""
+
+    def test_extracts_first_timestamp(self, tmp_path: Path) -> None:
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            "\n".join([
+                json.dumps({"type": "user", "timestamp": "2026-03-25T01:23:45Z"}),
+                json.dumps({"type": "assistant", "timestamp": "2026-03-25T01:23:50Z"}),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        assert _extract_session_started_at(transcript) == "2026-03-25T01:23:45+00:00"
+
+    def test_skips_lines_without_timestamp(self, tmp_path: Path) -> None:
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            "\n".join([
+                json.dumps({"type": "user"}),
+                json.dumps({"type": "assistant", "timestamp": "2026-03-25T02:00:00+09:00"}),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        assert _extract_session_started_at(transcript) == "2026-03-25T02:00:00+09:00"
+
+    def test_returns_none_when_no_timestamp(self, tmp_path: Path) -> None:
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n",
+            encoding="utf-8",
+        )
+        assert _extract_session_started_at(transcript) is None
+
+    def test_returns_none_when_file_missing(self, tmp_path: Path) -> None:
+        assert _extract_session_started_at(tmp_path / "missing.jsonl") is None
+
+    def test_tolerates_malformed_json_lines(self, tmp_path: Path) -> None:
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            "\n".join([
+                "not-json",
+                json.dumps({"type": "user", "timestamp": "2026-03-25T03:00:00Z"}),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        assert _extract_session_started_at(transcript) == "2026-03-25T03:00:00+00:00"
 
 
 # ---------------------------------------------------------------------------

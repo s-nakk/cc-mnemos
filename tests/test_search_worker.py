@@ -337,6 +337,7 @@ class TestMemorizeWorkerLoop:
             "session_id": "worker-session",
             "project": "demo",
             "work_dir": "/tmp",
+            "started_at": "2026-02-10T07:00:00+00:00",
             "chunks": [
                 {
                     "role_user": "ユーザー発話",
@@ -363,6 +364,12 @@ class TestMemorizeWorkerLoop:
             ).fetchone()
             assert row is not None
             assert row[0] == "claude"
+            started_at_row = store.conn.execute(
+                "SELECT started_at FROM sessions WHERE session_id = ?",
+                ("worker-session",),
+            ).fetchone()
+            assert started_at_row is not None
+            assert started_at_row[0] == "2026-02-10T07:00:00+00:00"
         finally:
             store.close()
 

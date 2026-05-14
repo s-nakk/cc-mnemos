@@ -310,6 +310,117 @@ class TestIncrementalEmbedding:
         finally:
             store.close()
 
+    def test_started_at_is_persisted_on_initial_insert(
+        self,
+        tmp_path: Path,
+        fake_embedder: FakeEmbedder,
+    ) -> None:
+        """started_at に渡した値が新規セッションの sessions.started_at に保存される"""
+        config = Config(general={"data_dir": str(tmp_path)})
+        store = MemoryStore(config)
+        try:
+            session_started_at = "2026-01-15T08:30:00+00:00"
+            persist_chunks(
+                session_id="sess-started-at",
+                project_name="proj",
+                work_dir=str(tmp_path),
+                chunk_records=_records_from_pairs([("Q1", "A1")]),
+                embedder=fake_embedder,
+                store=store,
+                started_at=session_started_at,
+            )
+
+            row = store.conn.execute(
+                "SELECT started_at FROM sessions WHERE session_id = ?",
+                ("sess-started-at",),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == session_started_at
+        finally:
+            store.close()
+
+    def test_started_at_repeated_call_does_not_overwrite(
+        self,
+        tmp_path: Path,
+        fake_embedder: FakeEmbedder,
+    ) -> None:
+        """同一 session_id への 2 回目呼び出しで started_at が上書きされない
+
+        Issue #2 と Item 1 の合わせ技で「初回の transcript timestamp が永続化され、
+        以降の memorize 発火では一切更新されない」ことを保証する
+        """
+        config = Config(general={"data_dir": str(tmp_path)})
+        store = MemoryStore(config)
+        try:
+            first_started_at = "2026-01-15T08:00:00+00:00"
+            second_started_at = "2026-01-15T12:00:00+00:00"
+            persist_chunks(
+                session_id="sess-no-overwrite",
+                project_name="proj",
+                work_dir=str(tmp_path),
+                chunk_records=_records_from_pairs([("Q1", "A1")]),
+                embedder=fake_embedder,
+                store=store,
+                started_at=first_started_at,
+            )
+            persist_chunks(
+                session_id="sess-no-overwrite",
+                project_name="proj",
+                work_dir=str(tmp_path),
+                chunk_records=_records_from_pairs([("Q1", "A1"), ("Q2", "A2")]),
+                embedder=fake_embedder,
+                store=store,
+                started_at=second_started_at,
+            )
+
+            row = store.conn.execute(
+                "SELECT started_at FROM sessions WHERE session_id = ?",
+                ("sess-no-overwrite",),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == first_started_at
+
+            chunk_count = store.conn.execute(
+                "SELECT COUNT(*) FROM chunks WHERE session_id = ?",
+                ("sess-no-overwrite",),
+            ).fetchone()[0]
+            assert chunk_count == 2
+        finally:
+            store.close()
+
+    def test_started_at_falls_back_to_now_when_none(
+        self,
+        tmp_path: Path,
+        fake_embedder: FakeEmbedder,
+    ) -> None:
+        """started_at=None の場合は現在時刻フォールバックが効く
+
+        transcript から timestamp を抽出できなかった保険経路
+        """
+        config = Config(general={"data_dir": str(tmp_path)})
+        store = MemoryStore(config)
+        try:
+            persist_chunks(
+                session_id="sess-fallback",
+                project_name="proj",
+                work_dir=str(tmp_path),
+                chunk_records=_records_from_pairs([("Q1", "A1")]),
+                embedder=fake_embedder,
+                store=store,
+                started_at=None,
+            )
+
+            row = store.conn.execute(
+                "SELECT started_at FROM sessions WHERE session_id = ?",
+                ("sess-fallback",),
+            ).fetchone()
+            assert row is not None
+            # ISO 8601 形式で何かしらの値が入っていれば OK (now() フォールバック)
+            assert isinstance(row[0], str)
+            assert len(row[0]) > 0
+        finally:
+            store.close()
+
     def test_recorded_source_is_set_on_first_run(
         self,
         tmp_path: Path,

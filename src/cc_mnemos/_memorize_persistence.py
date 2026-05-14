@@ -46,6 +46,7 @@ def persist_chunks(
     embedder: Embedder,
     store: MemoryStore,
     recorded_source: str = RECORDED_SOURCE,
+    started_at: str | None = None,
 ) -> None:
     """事前計算済みのチャンクを差分更新で SQLite に永続化する
 
@@ -73,6 +74,10 @@ def persist_chunks(
         embedder: 埋め込み計算に使うインスタンス
         store: 書き込み先の MemoryStore
         recorded_source: ``session_sources.recorded_source`` に入れる値
+        started_at: 新規セッション挿入時に使う「会話開始時刻」(ISO 8601)。
+            既存セッションに対しては ``insert_session`` 側の ON CONFLICT 句で
+            この値は無視されるため意味を持たない。``None`` の場合は現在時刻に
+            フォールバックする (transcript から timestamp を取れなかった保険)
     """
     if not chunk_records:
         return
@@ -97,6 +102,7 @@ def persist_chunks(
     )
 
     now = datetime.now(tz=timezone.utc).isoformat()
+    resolved_started_at = started_at or now
 
     with store.transaction():
         if to_delete:
@@ -105,7 +111,7 @@ def persist_chunks(
             session_id=session_id,
             project=project_name,
             work_dir=work_dir,
-            started_at=now,
+            started_at=resolved_started_at,
             recorded_source=recorded_source,
             commit=False,
         )

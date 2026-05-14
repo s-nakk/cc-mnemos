@@ -37,6 +37,33 @@ _ACK_TIMEOUT_SECONDS = 5.0
 _WORKER_STARTUP_TIMEOUT_SECONDS = 20.0
 
 
+def _extract_session_started_at(transcript_path: Path) -> str | None:
+    """transcript JSONL の先頭付近から会話開始時刻 (timestamp) を取得する
+
+    Claude Code の transcript は 1 行 1 メッセージの JSONL で、各行に
+    ``timestamp`` フィールドが入っている。最初に timestamp を持つ行の値を
+    会話開始時刻として返す。取得できなかった場合は ``None``
+    """
+    try:
+        with transcript_path.open(encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    entry = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                ts = entry.get("timestamp")
+                if isinstance(ts, str) and ts:
+                    return f"{ts[:-1]}+00:00" if ts.endswith("Z") else ts
+    except OSError:
+        return None
+    return None
+
+
 def run_memorize(hook_input: Mapping[str, object], config: Config) -> None:
     """memorize hook のエントリポイント
 
@@ -77,6 +104,7 @@ def _run_memorize_impl(hook_input: Mapping[str, object], config: Config) -> None
     cwd = str(hook_input.get("cwd", "."))
     project_name = project.infer_project_name(cwd, config)
     session_id = str(hook_input.get("session_id") or uuid.uuid4().hex)
+    started_at = _extract_session_started_at(transcript_path)
 
     tag_rules = config.tag_rules
     chunk_payload: list[dict[str, Any]] = []
@@ -100,6 +128,8 @@ def _run_memorize_impl(hook_input: Mapping[str, object], config: Config) -> None
         "work_dir": cwd,
         "chunks": chunk_payload,
     }
+    if started_at is not None:
+        payload["started_at"] = started_at
 
     if _try_send_to_worker(payload):
         logger.info(
@@ -109,7 +139,9 @@ def _run_memorize_impl(hook_input: Mapping[str, object], config: Config) -> None
         )
         return
 
-    _persist_in_process(session_id, project_name, cwd, chunk_payload, config)
+    _persist_in_process(
+        session_id, project_name, cwd, chunk_payload, config, started_at
+    )
 
 
 def _try_send_to_worker(payload: dict[str, object]) -> bool:
@@ -163,6 +195,7 @@ def _persist_in_process(
     cwd: str,
     chunk_payload: list[dict[str, Any]],
     config: Config,
+    started_at: str | None = None,
 ) -> None:
     """worker 不在時の in-process フォールバック
 
@@ -185,6 +218,7 @@ def _persist_in_process(
             embedder=embedder,
             store=store,
             recorded_source=RECORDED_SOURCE,
+            started_at=started_at,
         )
         logger.info(
             "in-process フォールバックでセッション %s に %d チャンクを保存しました",
