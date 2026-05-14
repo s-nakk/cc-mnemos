@@ -17,13 +17,11 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from cc_mnemos import search_worker_control
 from cc_mnemos.config import Config
 from cc_mnemos.search_worker_control import (
     WORKER_HOST,
     WORKER_PORT,
-    is_search_worker_available,
-    is_search_worker_listening,
-    start_search_worker_process,
 )
 from cc_mnemos.store import MemoryStore, StoreStats
 
@@ -117,44 +115,25 @@ def _coerce_limit(value: object, default: int = 10) -> int:
 # ---------------------------------------------------------------------------
 # 同期検索の実装 (スレッドプールで実行される)
 # ---------------------------------------------------------------------------
-_WORKER_STARTUP_WAIT_SECONDS = 30.0
-_WORKER_STARTUP_POLL_SECONDS = 0.5
 _WORKER_REQUEST_TIMEOUT_SECONDS = 30.0
 _WORKER_COMMUNICATION_ATTEMPTS = 2
 _worker_started = False
 
 
 def _ensure_worker() -> bool:
-    """検索ワーカーデーモンが起動していなければ起動する"""
+    """検索ワーカーデーモンが起動していなければ起動する
+
+    プロセスローカルなキャッシュフラグだけ管理し、起動と ready 確認は
+    ``search_worker_control.ensure_worker`` に委譲する
+    """
     global _worker_started  # noqa: PLW0603
-    if _worker_started and is_search_worker_available():
+    if _worker_started and search_worker_control.is_search_worker_available():
         return True
 
     _worker_started = False
-
-    # 既に検索可能ならそのまま使う
-    if is_search_worker_available():
+    if search_worker_control.ensure_worker():
         _worker_started = True
         return True
-
-    # 待受中ならロード完了を待つ。未起動の場合だけ新規起動する
-    if not is_search_worker_listening():
-        start_search_worker_process(port=WORKER_PORT)
-
-    # 起動を待機
-    import time
-
-    deadline = time.monotonic() + _WORKER_STARTUP_WAIT_SECONDS
-    while time.monotonic() < deadline:
-        if is_search_worker_available():
-            _worker_started = True
-            return True
-        time.sleep(_WORKER_STARTUP_POLL_SECONDS)
-
-    logger.error(
-        "search worker failed to start within %.1f seconds",
-        _WORKER_STARTUP_WAIT_SECONDS,
-    )
     return False
 
 

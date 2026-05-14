@@ -1,59 +1,70 @@
-"""保存パイプライン — 会話ログを分割・タグ付け・埋め込み・保存する"""
+"""memorize hook クライアント — 会話ログを worker daemon に投げる軽量実装
+
+Stop hook から起動された軽量プロセス側のロジック。重い embedding 計算と
+SQLite 書き込みは常駐 worker daemon に逐次処理させ、このプロセスは
+チャンク分割とタグ付け (どちらも regex のみで軽量) を済ませてから
+TCP で payload を送信し、ack を受け取って即終了する
+
+worker が起動できない／通信が失敗した場合は in-process フォールバックで
+従来通り Embedder と MemoryStore を直接開いて保存する
+"""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+import socket
+import uuid
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from cc_mnemos import chunker, project, tagger
-from cc_mnemos.embedder import Embedder
-from cc_mnemos.store import MemoryStore
+from cc_mnemos import chunker, project, search_worker_control, tagger
+from cc_mnemos._memorize_persistence import RECORDED_SOURCE, persist_chunks
+from cc_mnemos.search_worker_control import WORKER_HOST, WORKER_PORT
 
 if TYPE_CHECKING:
     from cc_mnemos.config import Config
 
 logger = logging.getLogger(__name__)
 
+# TCP 通信タイムアウト
+_CONNECT_TIMEOUT_SECONDS = 2.0
+_ACK_TIMEOUT_SECONDS = 5.0
 
-def run_memorize(hook_input: dict[str, object], config: Config) -> None:
-    """会話ログの保存パイプラインを実行する
+# worker 起動待ちの上限。Stop hook のデフォルト timeout (30 秒) 以内で
+# ack 取得 + フォールバックまで完了できるよう余裕を取って 20 秒に絞る
+_WORKER_STARTUP_TIMEOUT_SECONDS = 20.0
+
+
+def run_memorize(hook_input: Mapping[str, object], config: Config) -> None:
+    """memorize hook のエントリポイント
 
     1. stop_hook_active チェック (無限ループ防止)
-    2. トランスクリプトファイルの検証
-    3. チャンク分割
-    4. 埋め込みベクトル生成
-    5. タグ付け
-    6. SQLite へ永続化
+    2. transcript ファイル検証
+    3. チャンク分割 (embedder 不要)
+    4. タグ付け (embedder 不要、regex のみ)
+    5. worker への TCP 送信を試行
+    6. 失敗時は in-process フォールバックで永続化
 
-    Args:
-        hook_input: フック入力 (session_id, transcript_path, cwd など)
-        config: アプリケーション設定
+    例外は全て握り潰してログだけ残し、hook プロセスを壊さない
     """
     try:
         _run_memorize_impl(hook_input, config)
     except Exception:
-        logger.exception("memorize パイプラインでエラーが発生しました")
+        logger.exception("memorize で予期しないエラーが発生しました")
 
 
-def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
-    """パイプラインの内部実装"""
-    # 1. 無限ループ防止: stop_hook_active が True なら即座にリターン
+def _run_memorize_impl(hook_input: Mapping[str, object], config: Config) -> None:
     if hook_input.get("stop_hook_active", False):
         logger.info("stop_hook_active が True のためスキップします")
         return
 
-    # 2. トランスクリプトファイルの検証
-    transcript_path_str = str(hook_input.get("transcript_path", ""))
-    transcript_path = Path(transcript_path_str).expanduser()
+    transcript_path = Path(str(hook_input.get("transcript_path", ""))).expanduser()
     if not transcript_path.exists():
         logger.warning("トランスクリプトが見つかりません: %s", transcript_path)
         return
 
-    # 3. チャンク分割
     chunks = chunker.chunk_transcript(
         transcript_path,
         max_chars=config.max_chunk_chars,
@@ -63,69 +74,122 @@ def _run_memorize_impl(hook_input: dict[str, object], config: Config) -> None:
         logger.info("チャンクが生成されませんでした")
         return
 
-    # 4. プロジェクト名の推定
     cwd = str(hook_input.get("cwd", "."))
     project_name = project.infer_project_name(cwd, config)
+    session_id = str(hook_input.get("session_id") or uuid.uuid4().hex)
 
-    # 5. 埋め込みベクトル生成
-    embedder = Embedder(config)
-    embeddings = embedder.encode_documents([c.content for c in chunks])
-
-    # 6. タグ付け (キーワードはrole_userで判定、embeddingフォールバックは
-    #    現在のprototype文では精度が出ないため無効化)
     tag_rules = config.tag_rules
-    chunk_tags_list: list[list[str]] = []
+    chunk_payload: list[dict[str, Any]] = []
     for c in chunks:
         tags = tagger.assign_tags(
             c.content,
             tag_rules,
             keyword_text=c.role_user,
         )
-        chunk_tags_list.append(tags)
+        chunk_payload.append({
+            "role_user": c.role_user,
+            "role_assistant": c.role_assistant,
+            "content": c.content,
+            "tags": tags,
+        })
 
-    # 7. SQLite へ永続化
-    now = datetime.now(tz=timezone.utc).isoformat()
-    session_id = str(hook_input.get("session_id", ""))
-    if not session_id:
-        import uuid
-        session_id = uuid.uuid4().hex
+    payload: dict[str, object] = {
+        "type": "memorize",
+        "session_id": session_id,
+        "project": project_name,
+        "work_dir": cwd,
+        "chunks": chunk_payload,
+    }
 
+    if _try_send_to_worker(payload):
+        logger.info(
+            "セッション %s: %d チャンクを worker に投入しました",
+            session_id,
+            len(chunk_payload),
+        )
+        return
+
+    _persist_in_process(session_id, project_name, cwd, chunk_payload, config)
+
+
+def _try_send_to_worker(payload: dict[str, object]) -> bool:
+    """worker daemon に memorize payload を投げて ack を待つ
+
+    Returns:
+        ack が ``{"ok": true, ...}`` で返ってきた場合のみ True
+    """
+    if not search_worker_control.ensure_worker(
+        startup_timeout_seconds=_WORKER_STARTUP_TIMEOUT_SECONDS,
+    ):
+        return False
+
+    request_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
+
+    try:
+        with socket.create_connection(
+            (WORKER_HOST, WORKER_PORT),
+            timeout=_CONNECT_TIMEOUT_SECONDS,
+        ) as sock:
+            sock.settimeout(_ACK_TIMEOUT_SECONDS)
+            sock.sendall(request_bytes)
+            sock.shutdown(socket.SHUT_WR)
+
+            buffer = b""
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                buffer += chunk
+    except (OSError, TimeoutError) as exc:
+        logger.warning("worker への送信に失敗しました: %s", exc)
+        return False
+
+    try:
+        response = json.loads(buffer.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        logger.warning("worker からの応答を JSON として解釈できませんでした")
+        return False
+
+    if isinstance(response, dict) and response.get("ok") is True:
+        return True
+
+    logger.warning("worker が memorize を受け付けませんでした: %s", response)
+    return False
+
+
+def _persist_in_process(
+    session_id: str,
+    project_name: str,
+    cwd: str,
+    chunk_payload: list[dict[str, Any]],
+    config: Config,
+) -> None:
+    """worker 不在時の in-process フォールバック
+
+    Embedder と MemoryStore をこのプロセス内で構築して保存する
+    最終手段であり、頻発するようなら worker daemon の常駐状態を疑う
+    """
+    from cc_mnemos.embedder import Embedder
+    from cc_mnemos.store import MemoryStore
+
+    logger.info("worker 不在のため in-process フォールバックで保存します")
+
+    embedder = Embedder(config)
     store = MemoryStore(config)
     try:
-        with store.transaction():
-            # 再インジェスト時は既存チャンクを削除してからクリーンに挿入
-            store.delete_session_chunks(session_id, commit=False)
-
-            store.insert_session(
-                session_id=session_id,
-                project=project_name,
-                work_dir=cwd,
-                started_at=now,
-                recorded_source="claude",
-                commit=False,
-            )
-
-            for i, c in enumerate(chunks):
-                # 決定論的ID: 同一セッション+同一コンテンツは常に同じIDになる
-                chunk_id = hashlib.sha256(
-                    f"{session_id}:{c.content}".encode()
-                ).hexdigest()
-                chunk_data: dict[str, str | int] = {
-                    "id": chunk_id,
-                    "session_id": session_id,
-                    "role_user": c.role_user,
-                    "role_assistant": c.role_assistant,
-                    "content": c.content,
-                    "tags": json.dumps(chunk_tags_list[i]),
-                    "created_at": now,
-                    "token_count": len(c.content),
-                }
-                store.insert_chunk(chunk_data, embeddings[i], commit=False)
-
+        persist_chunks(
+            session_id=session_id,
+            project_name=project_name,
+            work_dir=cwd,
+            chunk_records=chunk_payload,
+            embedder=embedder,
+            store=store,
+            recorded_source=RECORDED_SOURCE,
+        )
         logger.info(
-            "セッション %s: %d チャンクを保存しました",
+            "in-process フォールバックでセッション %s に %d チャンクを保存しました",
             session_id,
-            len(chunks),
+            len(chunk_payload),
         )
     finally:
         store.close()

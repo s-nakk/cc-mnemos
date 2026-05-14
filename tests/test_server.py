@@ -124,22 +124,32 @@ class TestEnsureWorker:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from cc_mnemos import server
+        from cc_mnemos import search_worker_control, server
 
-        def unavailable() -> bool:
+        def unavailable(**_: object) -> bool:
             return False
 
-        def listening() -> bool:
+        def listening(**_: object) -> bool:
             return True
 
-        def fail_start(*, port: int) -> None:
+        def fail_start(*, port: int) -> object:
             raise AssertionError("should not start duplicate worker while port is bound")
 
         monkeypatch.setattr(server, "_worker_started", False)
-        monkeypatch.setattr(server, "_WORKER_STARTUP_WAIT_SECONDS", 0.001)
-        monkeypatch.setattr(server, "_WORKER_STARTUP_POLL_SECONDS", 0.001)
-        monkeypatch.setattr(server, "is_search_worker_available", unavailable)
-        monkeypatch.setattr(server, "is_search_worker_listening", listening)
-        monkeypatch.setattr(server, "start_search_worker_process", fail_start)
+        monkeypatch.setattr(
+            search_worker_control, "DEFAULT_STARTUP_TIMEOUT_SECONDS", 0.001
+        )
+        monkeypatch.setattr(
+            search_worker_control, "DEFAULT_STARTUP_POLL_SECONDS", 0.001
+        )
+        monkeypatch.setattr(
+            search_worker_control, "is_search_worker_available", unavailable
+        )
+        monkeypatch.setattr(
+            search_worker_control, "is_search_worker_listening", listening
+        )
+        monkeypatch.setattr(
+            search_worker_control, "start_search_worker_process", fail_start
+        )
 
         assert server._ensure_worker() is False

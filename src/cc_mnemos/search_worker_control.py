@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 WORKER_HOST = "127.0.0.1"
 WORKER_PORT = 19836
 WORKER_CONNECT_TIMEOUT_SECONDS = 1.0
 WORKER_PING_REQUEST = {"type": "ping"}
 WORKER_PING_RESPONSE = {"ok": True}
+
+# ensure_worker のデフォルト値
+DEFAULT_STARTUP_TIMEOUT_SECONDS = 30.0
+DEFAULT_STARTUP_POLL_SECONDS = 0.5
 
 
 def is_search_worker_listening(
@@ -94,3 +102,59 @@ def start_search_worker_process(
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+def ensure_worker(
+    *,
+    port: int = WORKER_PORT,
+    startup_timeout_seconds: float | None = None,
+    poll_interval_seconds: float | None = None,
+) -> bool:
+    """search worker が ready 状態になるまで待機し、必要なら起動する
+
+    呼び出し元（``cc_mnemos.server`` の MCP ハンドラ、``cc_mnemos.memorize``
+    の hook クライアント等）の双方から共通利用できるよう、プロセスローカル
+    なキャッシュフラグは持たない。呼び出し側で短寿命のフラグを管理する想定
+
+    Args:
+        port: worker が待ち受けるポート
+        startup_timeout_seconds: 起動完了を待つ最大秒数 (``None`` ならモジュール定数を使用)
+        poll_interval_seconds: ready 判定のポーリング間隔 (``None`` ならモジュール定数を使用)
+
+    Returns:
+        ready が確認できた場合は True
+    """
+    # モジュール定数を実行時に解決することで、テストから monkeypatch で短縮可能にする
+    timeout_seconds = (
+        startup_timeout_seconds
+        if startup_timeout_seconds is not None
+        else DEFAULT_STARTUP_TIMEOUT_SECONDS
+    )
+    poll_seconds = (
+        poll_interval_seconds
+        if poll_interval_seconds is not None
+        else DEFAULT_STARTUP_POLL_SECONDS
+    )
+
+    if is_search_worker_available():
+        return True
+
+    # 待受中ならロード完了を待つ。未起動の場合だけ新規起動する
+    if not is_search_worker_listening():
+        try:
+            start_search_worker_process(port=port)
+        except Exception:  # noqa: BLE001
+            logger.exception("search worker の起動に失敗しました")
+            return False
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if is_search_worker_available():
+            return True
+        time.sleep(poll_seconds)
+
+    logger.error(
+        "search worker が %.1f 秒以内に起動しませんでした",
+        timeout_seconds,
+    )
+    return False
