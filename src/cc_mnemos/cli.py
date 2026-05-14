@@ -437,13 +437,25 @@ def run_setup(config: None = None) -> None:
 # サブコマンドハンドラ
 # ---------------------------------------------------------------------------
 def _handle_memorize(args: argparse.Namespace) -> None:
-    """memorize サブコマンドのハンドラ"""
+    """memorize サブコマンドのハンドラ
+
+    hook の async 起動側を壊さないため、stdin パースや run_memorize の
+    例外は全て握り潰してログだけ残し、終了コード 0 で正常終了する
+    """
     from cc_mnemos.config import Config
     from cc_mnemos.memorize import run_memorize
 
-    hook_input: dict[str, object] = json.load(sys.stdin)
-    cfg = Config.load()
-    run_memorize(hook_input, cfg)
+    try:
+        hook_input: dict[str, object] = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+        logger.exception("memorize hook の stdin を JSON として解釈できませんでした")
+        return
+
+    try:
+        cfg = Config.load()
+        run_memorize(hook_input, cfg)
+    except Exception:
+        logger.exception("memorize hook 実行中に予期しないエラーが発生しました")
 
 
 def _handle_recall(args: argparse.Namespace) -> None:

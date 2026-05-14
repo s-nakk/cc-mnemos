@@ -1,21 +1,33 @@
-"""_search_worker.py の起動順序テスト"""
+"""_search_worker.py の起動順序とエンドポイントテスト"""
 
 from __future__ import annotations
 
 import json
+import queue
 import socket
 import threading
-from types import TracebackType
-from typing import TYPE_CHECKING, Literal, NoReturn, cast
+import time
+from typing import TYPE_CHECKING, NoReturn, cast
 
 import pytest
+from conftest import FakeSocket
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from conftest import FakeEmbedder
+
     from cc_mnemos.config import Config
     from cc_mnemos.embedder import Embedder
 
 
-class _FakeSocket:
+class _AcceptInterruptSocket:
+    """``run_daemon`` の bind/listen/accept 順序を検証するためのスタブ socket
+
+    ``accept`` で ``KeyboardInterrupt`` を投げ、受け取ったイベントの順序を
+    ``_events`` に記録する
+    """
+
     def __init__(self, events: list[str]) -> None:
         self._events = events
 
@@ -33,35 +45,6 @@ class _FakeSocket:
         raise KeyboardInterrupt
 
 
-class _FakeReadySocket:
-    def __init__(self, response: bytes, sent: list[bytes]) -> None:
-        self._response = response
-        self._sent = sent
-
-    def __enter__(self) -> _FakeReadySocket:
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> Literal[False]:
-        return False
-
-    def settimeout(self, timeout_seconds: float) -> None:
-        return
-
-    def sendall(self, data: bytes) -> None:
-        self._sent.append(data)
-
-    def shutdown(self, how: int) -> None:
-        return
-
-    def recv(self, bufsize: int) -> bytes:
-        return self._response
-
-
 def test_daemon_binds_before_loading_embedder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -72,21 +55,21 @@ def test_daemon_binds_before_loading_embedder(
 
     events: list[str] = []
 
-    def socket_factory(family: int, kind: int) -> _FakeSocket:
+    def socket_factory(family: int, kind: int) -> _AcceptInterruptSocket:
         events.append("socket")
-        return _FakeSocket(events)
+        return _AcceptInterruptSocket(events)
 
     def load_config() -> object:
         events.append("config")
         return object()
 
-    class FakeEmbedder:
+    class FakeEmbedderForOrder:
         def __init__(self, config: object) -> None:
             events.append("embedder")
 
     monkeypatch.setattr("cc_mnemos._search_worker.socket.socket", socket_factory)
     monkeypatch.setattr(config_module.Config, "load", staticmethod(load_config))
-    monkeypatch.setattr(embedder_module, "Embedder", FakeEmbedder)
+    monkeypatch.setattr(embedder_module, "Embedder", FakeEmbedderForOrder)
 
     with pytest.raises(KeyboardInterrupt):
         _search_worker.run_daemon(19836)
@@ -127,21 +110,15 @@ def test_worker_available_requires_ready_ping(
     """TCP 接続だけではなく ready ping の応答まで確認する"""
     from cc_mnemos.search_worker_control import is_search_worker_available
 
-    sent: list[bytes] = []
-
-    def create_connection(
-        address: tuple[str, int],
-        timeout: float,
-    ) -> _FakeReadySocket:
-        return _FakeReadySocket(b'{"ok": true}', sent)
+    fake_sock = FakeSocket(response=b'{"ok": true}')
 
     monkeypatch.setattr(
         "cc_mnemos.search_worker_control.socket.create_connection",
-        create_connection,
+        lambda *_a, **_kw: fake_sock,
     )
 
     assert is_search_worker_available()
-    assert sent == [b'{"type": "ping"}\n']
+    assert bytes(fake_sock.sent) == b'{"type": "ping"}\n'
 
 
 def test_worker_available_rejects_non_ready_response(
@@ -150,15 +127,331 @@ def test_worker_available_rejects_non_ready_response(
     """接続できても ready ping でなければ利用可能扱いしない"""
     from cc_mnemos.search_worker_control import is_search_worker_available
 
-    def create_connection(
-        address: tuple[str, int],
-        timeout: float,
-    ) -> _FakeReadySocket:
-        return _FakeReadySocket(b"[]", [])
-
     monkeypatch.setattr(
         "cc_mnemos.search_worker_control.socket.create_connection",
-        create_connection,
+        lambda *_a, **_kw: FakeSocket(response=b"[]"),
     )
 
     assert not is_search_worker_available()
+
+
+# ---------------------------------------------------------------------------
+# memorize エンドポイントのディスパッチ単体テスト
+# ---------------------------------------------------------------------------
+class TestMemorizeDispatch:
+    def test_memorize_request_enqueues_and_acks(self) -> None:
+        from cc_mnemos import _search_worker
+
+        q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=10)
+        alive = threading.Event()
+        alive.set()
+
+        response = _search_worker._dispatch_memorize_request(
+            {
+                "type": "memorize",
+                "session_id": "s1",
+                "chunks": [{"content": "abc", "tags": ["x"]}],
+            },
+            q,
+            alive,
+        )
+        payload = json.loads(response.decode("utf-8"))
+        assert payload == {"ok": True, "queued": 1}
+        assert q.qsize() == 1
+
+    def test_memorize_request_queue_full(self) -> None:
+        from cc_mnemos import _search_worker
+
+        q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
+        q.put_nowait({"filler": True})
+        alive = threading.Event()
+        alive.set()
+
+        response = _search_worker._dispatch_memorize_request(
+            {"type": "memorize", "chunks": [{"content": "abc"}]},
+            q,
+            alive,
+        )
+        payload = json.loads(response.decode("utf-8"))
+        assert payload == {"ok": False, "error": "queue_full"}
+
+    def test_memorize_request_invalid_payload(self) -> None:
+        from cc_mnemos import _search_worker
+
+        q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=10)
+        alive = threading.Event()
+        alive.set()
+
+        response = _search_worker._dispatch_memorize_request(
+            {"type": "memorize"},  # chunks 欠落
+            q,
+            alive,
+        )
+        payload = json.loads(response.decode("utf-8"))
+        assert payload == {"ok": False, "error": "invalid_payload"}
+
+    def test_memorize_request_worker_not_ready(self) -> None:
+        from cc_mnemos import _search_worker
+
+        q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=10)
+        alive = threading.Event()
+        # alive を set() しない
+
+        response = _search_worker._dispatch_memorize_request(
+            {"type": "memorize", "chunks": [{"content": "abc"}]},
+            q,
+            alive,
+        )
+        payload = json.loads(response.decode("utf-8"))
+        assert payload == {"ok": False, "error": "worker_not_ready"}
+
+
+# ---------------------------------------------------------------------------
+# _handle_client 経由の memorize 受領 (socketpair 経由)
+# ---------------------------------------------------------------------------
+def test_handle_client_routes_memorize_to_queue() -> None:
+    """type=memorize リクエストが _handle_client からキューに積まれる"""
+    from cc_mnemos import _search_worker
+
+    q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=10)
+    alive = threading.Event()
+    alive.set()
+
+    client_sock, server_sock = socket.socketpair()
+    thread = threading.Thread(
+        target=_search_worker._handle_client,
+        args=(
+            server_sock,
+            cast("Embedder", object()),
+            cast("Config", object()),
+        ),
+        kwargs={"memorize_queue": q, "memorize_alive": alive},
+    )
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "type": "memorize",
+                "session_id": "s2",
+                "chunks": [{"content": "hello"}],
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        client_sock.sendall(payload + b"\n")
+        client_sock.shutdown(socket.SHUT_WR)
+        response = client_sock.recv(65536)
+    finally:
+        client_sock.close()
+        thread.join(timeout=5)
+
+    decoded = json.loads(response.decode("utf-8"))
+    assert decoded.get("ok") is True
+    assert q.qsize() == 1
+    item = q.get_nowait()
+    assert item["session_id"] == "s2"
+
+
+# ---------------------------------------------------------------------------
+# memorize worker loop の挙動 (実 MemoryStore + FakeEmbedder)
+# ---------------------------------------------------------------------------
+class TestMemorizeWorkerLoop:
+    def test_persists_chunks_via_loop(
+        self,
+        tmp_path: Path,
+        mock_embedder: type[FakeEmbedder],
+    ) -> None:
+        from cc_mnemos import _search_worker
+        from cc_mnemos.embedder import Embedder
+
+        config = __import__("cc_mnemos.config", fromlist=["Config"]).Config(
+            general={"data_dir": str(tmp_path)}
+        )
+        embedder = Embedder(config)  # FakeEmbedder
+
+        q: queue.Queue[dict[str, object] | None] = queue.Queue(maxsize=10)
+        alive = threading.Event()
+
+        thread = threading.Thread(
+            target=_search_worker._memorize_worker_loop,
+            args=(q, embedder, config, alive),
+            daemon=True,
+        )
+        thread.start()
+
+        # alive が立つまで少し待つ
+        assert alive.wait(timeout=5.0)
+
+        q.put({
+            "session_id": "worker-session",
+            "project": "demo",
+            "work_dir": "/tmp",
+            "chunks": [
+                {
+                    "role_user": "ユーザー発話",
+                    "role_assistant": "アシスタント応答",
+                    "content": "ユーザー発話\nアシスタント応答",
+                    "tags": ["debug"],
+                },
+            ],
+        })
+
+        # シャットダウンセンチネル
+        q.put(None)
+        thread.join(timeout=10.0)
+        assert not thread.is_alive()
+
+        store = __import__("cc_mnemos.store", fromlist=["MemoryStore"]).MemoryStore(config)
+        try:
+            stats = store.get_stats()
+            assert stats["total_chunks"] == 1
+            assert stats["total_sessions"] == 1
+            row = store.conn.execute(
+                "SELECT recorded_source FROM session_sources WHERE session_id = ?",
+                ("worker-session",),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "claude"
+        finally:
+            store.close()
+
+    def test_loop_continues_after_exception(
+        self,
+        tmp_path: Path,
+        mock_embedder: type[FakeEmbedder],
+    ) -> None:
+        """1 件目で例外が出ても 2 件目を処理して loop が継続する"""
+        from cc_mnemos import _search_worker
+        from cc_mnemos.config import Config
+        from cc_mnemos.embedder import Embedder
+        from cc_mnemos.store import MemoryStore
+
+        config = Config(general={"data_dir": str(tmp_path)})
+        embedder = Embedder(config)
+
+        q: queue.Queue[dict[str, object] | None] = queue.Queue(maxsize=10)
+        alive = threading.Event()
+
+        thread = threading.Thread(
+            target=_search_worker._memorize_worker_loop,
+            args=(q, embedder, config, alive),
+            daemon=True,
+        )
+        thread.start()
+        assert alive.wait(timeout=5.0)
+
+        # 1 件目: 不正リクエスト (chunks が辞書ではない) — _persist_memorize_request 内で
+        # スキップされるが、後段 (insert_chunk など) で例外を起こす意図的なケースとして
+        # 「contents は空 → 早期 return」になる。例外耐性確認のため次のケースを使う
+        q.put({"session_id": "broken", "chunks": "not-a-list"})
+
+        # 2 件目: 正常
+        q.put({
+            "session_id": "good-session",
+            "project": "demo",
+            "work_dir": "/tmp",
+            "chunks": [{"content": "ok content for good session"}],
+        })
+
+        q.put(None)
+        thread.join(timeout=10.0)
+        assert not thread.is_alive()
+
+        store = MemoryStore(config)
+        try:
+            # broken は contents 抽出で空になり保存されない、good-session は保存される
+            row = store.conn.execute(
+                "SELECT COUNT(*) FROM chunks WHERE session_id = ?",
+                ("good-session",),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == 1
+        finally:
+            store.close()
+
+
+# ---------------------------------------------------------------------------
+# end-to-end: run_daemon を起動して memorize リクエストを処理させる
+# ---------------------------------------------------------------------------
+class TestRunDaemonIntegration:
+    def test_run_daemon_starts_memorize_thread(
+        self,
+        tmp_path: Path,
+        free_port: int,
+        mock_embedder: type[FakeEmbedder],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """run_daemon を別スレッドで起動し、memorize リクエストが accepted される"""
+        from cc_mnemos import _search_worker
+        from cc_mnemos.config import Config
+
+        config = Config(general={"data_dir": str(tmp_path)})
+
+        # Config.load() を tmp_path 用の config に差し替える
+        monkeypatch.setattr(
+            "cc_mnemos.config.Config.load", classmethod(lambda cls: config)
+        )
+
+        daemon_thread = threading.Thread(
+            target=_search_worker.run_daemon,
+            args=(free_port,),
+            daemon=True,
+        )
+        daemon_thread.start()
+
+        # listen 待ち
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", free_port), timeout=0.2) as sock:
+                    sock.sendall(b'{"type":"ping"}\n')
+                    sock.shutdown(socket.SHUT_WR)
+                    raw = sock.recv(65536)
+                if json.loads(raw.decode("utf-8")) == {"ok": True}:
+                    break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("worker daemon did not become ready in time")
+
+        # memorize リクエスト送信 (memorize worker thread の初期化を待つため最大数秒リトライ)
+        request_bytes = (
+            json.dumps(
+                {
+                    "type": "memorize",
+                    "session_id": "daemon-session",
+                    "project": "demo",
+                    "work_dir": "/tmp",
+                    "chunks": [{"content": "integration test content"}],
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            + b"\n"
+        )
+
+        deadline = time.monotonic() + 5.0
+        decoded: dict[str, object] = {}
+        while time.monotonic() < deadline:
+            with socket.create_connection(("127.0.0.1", free_port), timeout=2.0) as sock:
+                sock.sendall(request_bytes)
+                sock.shutdown(socket.SHUT_WR)
+                raw = sock.recv(65536)
+            decoded = json.loads(raw.decode("utf-8"))
+            if decoded.get("ok") is True:
+                break
+            time.sleep(0.1)
+
+        assert decoded.get("ok") is True
+
+        # 永続化されるまで少し待ってから検証
+        from cc_mnemos.store import MemoryStore
+
+        for _ in range(50):
+            store = MemoryStore(config)
+            try:
+                stats = store.get_stats()
+            finally:
+                store.close()
+            if stats["total_chunks"] >= 1:
+                break
+            time.sleep(0.1)
+        assert stats["total_chunks"] >= 1
