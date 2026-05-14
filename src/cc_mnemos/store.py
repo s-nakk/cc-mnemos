@@ -430,7 +430,6 @@ class MemoryStore:
             ON CONFLICT(session_id) DO UPDATE SET
                 project=excluded.project,
                 work_dir=excluded.work_dir,
-                started_at=excluded.started_at,
                 ended_at=excluded.ended_at,
                 summary=excluded.summary
             """,

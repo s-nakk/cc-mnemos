@@ -15,9 +15,26 @@ from cc_mnemos.prompt_inject import _format_injection, run_prompt_inject
 from cc_mnemos.store import MemoryStore
 
 
+@pytest.fixture
+def _force_fts_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """テスト中は worker daemon に接続させず必ず FTS fallback 経路を通す
+
+    開発機で worker daemon (port 19836) が常駐していると、tmp_path の検証用 DB
+    ではなく本物の DB を見に行くため、テストが非決定論的になる。`_query_worker`
+    を None 固定でスタブ化することで fallback 経路に強制誘導する
+    """
+    monkeypatch.setattr(
+        "cc_mnemos.prompt_inject._query_worker",
+        lambda *args, **kwargs: None,
+    )
+
+
 class TestPromptInject:
     def test_injects_relevant_memory(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        _force_fts_fallback: None,
     ) -> None:
         """関連する記憶がある場合はstdoutに出力される"""
         config = Config(general={"data_dir": str(tmp_path)})
@@ -48,7 +65,10 @@ class TestPromptInject:
         assert "border-radius" in captured.out
 
     def test_silent_when_no_match(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        _force_fts_fallback: None,
     ) -> None:
         """関連する記憶がない場合は何も出力しない"""
         config = Config(general={"data_dir": str(tmp_path)})

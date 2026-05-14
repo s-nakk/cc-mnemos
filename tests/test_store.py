@@ -55,6 +55,41 @@ class TestInsertAndQuery:
         assert source_row is not None
         assert source_row[0] == "claude"
 
+    def test_insert_session_preserves_started_at_on_conflict(
+        self, store: MemoryStore
+    ) -> None:
+        """同一 session_id に対する 2 回目以降の insert_session で started_at が
+        上書きされないことを保証する (issue #2 リグレッション防止)
+        """
+        session_id = make_session_id()
+        initial_started_at = "2026-01-01T00:00:00+00:00"
+        later_started_at = "2026-05-14T12:00:00+00:00"
+
+        store.insert_session(
+            session_id=session_id,
+            project="test-project",
+            work_dir="/tmp/test",
+            started_at=initial_started_at,
+        )
+
+        store.insert_session(
+            session_id=session_id,
+            project="test-project",
+            work_dir="/tmp/test",
+            started_at=later_started_at,
+            ended_at="2026-05-14T13:00:00+00:00",
+            summary="updated summary",
+        )
+
+        row = store.conn.execute(
+            "SELECT started_at, ended_at, summary FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == initial_started_at, "started_at は初回値のまま維持される必要がある"
+        assert row[1] == "2026-05-14T13:00:00+00:00"
+        assert row[2] == "updated summary"
+
     def test_fts_search(self, store: MemoryStore) -> None:
         session_id = make_session_id()
         store.insert_session(

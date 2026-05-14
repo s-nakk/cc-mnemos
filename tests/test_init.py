@@ -26,11 +26,11 @@ class TestInit:
 
     def test_creates_hooks_in_settings(self, tmp_path: Path) -> None:
         settings_path = tmp_path / "settings.json"
-        settings_path.write_text("{}")
+        settings_path.write_text("{}", encoding="utf-8")
         mcp_config_path = tmp_path / ".claude.json"
-        mcp_config_path.write_text("{}")
+        mcp_config_path.write_text("{}", encoding="utf-8")
         claude_md_path = tmp_path / "CLAUDE.md"
-        claude_md_path.write_text("# Guidelines\n")
+        claude_md_path.write_text("# Guidelines\n", encoding="utf-8")
 
         run_init(
             settings_path=settings_path,
@@ -38,8 +38,8 @@ class TestInit:
             mcp_config_path=mcp_config_path,
         )
 
-        settings = json.loads(settings_path.read_text())
-        mcp_config = json.loads(mcp_config_path.read_text())
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        mcp_config = json.loads(mcp_config_path.read_text(encoding="utf-8"))
         assert "hooks" in settings
         assert "Stop" in settings["hooks"]
         assert "SessionStart" in settings["hooks"]
@@ -47,11 +47,11 @@ class TestInit:
 
     def test_appends_to_claude_md(self, tmp_path: Path) -> None:
         settings_path = tmp_path / "settings.json"
-        settings_path.write_text("{}")
+        settings_path.write_text("{}", encoding="utf-8")
         mcp_config_path = tmp_path / ".claude.json"
-        mcp_config_path.write_text("{}")
+        mcp_config_path.write_text("{}", encoding="utf-8")
         claude_md_path = tmp_path / "CLAUDE.md"
-        claude_md_path.write_text("# Guidelines\n")
+        claude_md_path.write_text("# Guidelines\n", encoding="utf-8")
 
         run_init(
             settings_path=settings_path,
@@ -59,7 +59,7 @@ class TestInit:
             mcp_config_path=mcp_config_path,
         )
 
-        content = claude_md_path.read_text()
+        content = claude_md_path.read_text(encoding="utf-8")
         assert "cc-mnemos" in content
         assert "search_memory" in content
 
@@ -67,11 +67,11 @@ class TestInit:
         existing_settings = {"env": {"FOO": "bar"}}
         existing_mcp_config = {"mcpServers": {"other": {"command": "test"}}}
         settings_path = tmp_path / "settings.json"
-        settings_path.write_text(json.dumps(existing_settings))
+        settings_path.write_text(json.dumps(existing_settings), encoding="utf-8")
         mcp_config_path = tmp_path / ".claude.json"
-        mcp_config_path.write_text(json.dumps(existing_mcp_config))
+        mcp_config_path.write_text(json.dumps(existing_mcp_config), encoding="utf-8")
         claude_md_path = tmp_path / "CLAUDE.md"
-        claude_md_path.write_text("")
+        claude_md_path.write_text("", encoding="utf-8")
 
         run_init(
             settings_path=settings_path,
@@ -79,8 +79,8 @@ class TestInit:
             mcp_config_path=mcp_config_path,
         )
 
-        settings = json.loads(settings_path.read_text())
-        mcp_config = json.loads(mcp_config_path.read_text())
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        mcp_config = json.loads(mcp_config_path.read_text(encoding="utf-8"))
         assert settings["env"]["FOO"] == "bar"
         assert "other" in mcp_config["mcpServers"]
         assert "cc-mnemos" in mcp_config["mcpServers"]
@@ -103,11 +103,11 @@ class TestInit:
             }
         }
         settings_path = tmp_path / "settings.json"
-        settings_path.write_text(json.dumps(existing_settings))
+        settings_path.write_text(json.dumps(existing_settings), encoding="utf-8")
         mcp_config_path = tmp_path / ".claude.json"
-        mcp_config_path.write_text("{}")
+        mcp_config_path.write_text("{}", encoding="utf-8")
         claude_md_path = tmp_path / "CLAUDE.md"
-        claude_md_path.write_text("")
+        claude_md_path.write_text("", encoding="utf-8")
 
         run_init(
             settings_path=settings_path,
@@ -115,7 +115,7 @@ class TestInit:
             mcp_config_path=mcp_config_path,
         )
 
-        settings = json.loads(settings_path.read_text())
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
         stop_hooks = settings["hooks"]["Stop"][0]["hooks"]
         commands = [hook["command"] for hook in stop_hooks]
         assert "custom-stop-command" in commands
@@ -123,11 +123,11 @@ class TestInit:
 
     def test_skips_claude_md_if_already_present(self, tmp_path: Path) -> None:
         settings_path = tmp_path / "settings.json"
-        settings_path.write_text("{}")
+        settings_path.write_text("{}", encoding="utf-8")
         mcp_config_path = tmp_path / ".claude.json"
-        mcp_config_path.write_text("{}")
+        mcp_config_path.write_text("{}", encoding="utf-8")
         claude_md_path = tmp_path / "CLAUDE.md"
-        claude_md_path.write_text("# Guidelines\ncc-mnemos already here\n")
+        claude_md_path.write_text("# Guidelines\ncc-mnemos already here\n", encoding="utf-8")
 
         run_init(
             settings_path=settings_path,
@@ -135,7 +135,7 @@ class TestInit:
             mcp_config_path=mcp_config_path,
         )
 
-        content = claude_md_path.read_text()
+        content = claude_md_path.read_text(encoding="utf-8")
         # search_memory は追記されていないはず
         assert content.count("search_memory") == 0
 
@@ -143,7 +143,7 @@ class TestInit:
         settings_path = tmp_path / "settings.json"
         mcp_config_path = tmp_path / ".claude.json"
         claude_md_path = tmp_path / "CLAUDE.md"
-        claude_md_path.write_text("")
+        claude_md_path.write_text("", encoding="utf-8")
 
         run_init(
             settings_path=settings_path,
@@ -153,16 +153,16 @@ class TestInit:
 
         assert settings_path.exists()
         assert mcp_config_path.exists()
-        settings = json.loads(settings_path.read_text())
-        mcp_config = json.loads(mcp_config_path.read_text())
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        mcp_config = json.loads(mcp_config_path.read_text(encoding="utf-8"))
         assert "hooks" in settings
         assert "cc-mnemos" in mcp_config["mcpServers"]
 
     def test_creates_claude_md_if_missing(self, tmp_path: Path) -> None:
         settings_path = tmp_path / "settings.json"
-        settings_path.write_text("{}")
+        settings_path.write_text("{}", encoding="utf-8")
         mcp_config_path = tmp_path / ".claude.json"
-        mcp_config_path.write_text("{}")
+        mcp_config_path.write_text("{}", encoding="utf-8")
         claude_md_path = tmp_path / "CLAUDE.md"
         # ファイルを作成しない
 
@@ -173,7 +173,7 @@ class TestInit:
         )
 
         assert claude_md_path.exists()
-        content = claude_md_path.read_text()
+        content = claude_md_path.read_text(encoding="utf-8")
         assert "cc-mnemos" in content
 
     def test_target_codex_updates_codex_files(self, tmp_path: Path) -> None:
