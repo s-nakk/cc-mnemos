@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 3
 
+# SQLite のバインド変数上限 (デフォルト 999) を超えないように
+# 一度の IN 句で扱うチャンク ID 数を制限する。chunks の一括削除パスは
+# 全てこの値でバッチ処理する
+_SQLITE_PARAM_BATCH_SIZE = 500
+
 
 class StoreStats(TypedDict):
     total_chunks: int
@@ -264,6 +269,82 @@ class MemoryStore:
         else:
             self.conn.commit()
 
+    def get_session_chunk_ids(self, session_id: str) -> set[str]:
+        """指定セッションに紐づく既存チャンク ID の集合を返す
+
+        memorize の差分更新で、新規 chunk_id 一覧と DB 上の集合を比較し
+        ``existing - new`` を削除、``new - existing`` だけ embed + insert する
+        ために使う。chunk_id は ``make_chunk_id`` で決定論的に決まる前提
+
+        Args:
+            session_id: 対象セッション ID
+
+        Returns:
+            既存チャンク ID の集合 (該当なしの場合は空集合)
+        """
+        rows = self.conn.execute(
+            "SELECT id FROM chunks WHERE session_id = ?", (session_id,)
+        ).fetchall()
+        return {str(row[0]) for row in rows}
+
+    def delete_chunks_by_ids(
+        self,
+        chunk_ids: list[str],
+        *,
+        commit: bool = True,
+    ) -> int:
+        """チャンク ID のリストを指定して関連テーブルを整合的に削除する
+
+        chunks / chunk_vec_map / vec_chunks / chunks_fts (トリガー経由) を消す
+
+        ``delete_session_chunks`` のセッション単位削除と違い、こちらは差分削除用に
+        ID リストを直接受け取る。SQLite のパラメータ上限を超えないよう、
+        ``_SQLITE_PARAM_BATCH_SIZE`` 単位でバッチ処理する。``chunks_fts`` は
+        ``chunks_ad`` トリガーが ``DELETE FROM chunks`` を契機に自動で同期する
+
+        Args:
+            chunk_ids: 削除対象のチャンク ID リスト
+            commit: 自動コミットするか
+
+        Returns:
+            削除したチャンク数 (``chunks`` テーブル基準)
+        """
+        if not chunk_ids:
+            return 0
+
+        deleted_total = 0
+        for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH_SIZE):
+            batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH_SIZE]
+            placeholders = ",".join("?" for _ in batch)
+
+            if self._use_sqlite_vec:
+                map_rows = self.conn.execute(
+                    f"SELECT rowid_int FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",  # noqa: S608
+                    batch,
+                ).fetchall()
+                if map_rows:
+                    rowid_phs = ",".join("?" for _ in map_rows)
+                    rowids = [r[0] for r in map_rows]
+                    self.conn.execute(
+                        f"DELETE FROM vec_chunks WHERE rowid IN ({rowid_phs})",  # noqa: S608
+                        rowids,
+                    )
+
+            self.conn.execute(
+                f"DELETE FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",  # noqa: S608
+                batch,
+            )
+
+            rowcount = self.conn.execute(
+                f"DELETE FROM chunks WHERE id IN ({placeholders})",  # noqa: S608
+                batch,
+            ).rowcount
+            deleted_total += max(rowcount or 0, 0)
+
+        if commit:
+            self.conn.commit()
+        return deleted_total
+
     def delete_session_chunks(self, session_id: str, *, commit: bool = True) -> int:
         """セッションの既存チャンクをすべて削除する
 
@@ -329,7 +410,7 @@ class MemoryStore:
         recorded_source: str | None = None,
         commit: bool = True,
     ) -> None:
-        """セッションレコードを挿入する
+        """セッションレコードを挿入または更新する
 
         Args:
             session_id: セッションID
@@ -338,6 +419,8 @@ class MemoryStore:
             started_at: 開始日時(ISO 8601)
             ended_at: 終了日時(ISO 8601)
             summary: セッション要約
+            recorded_source: ``session_sources.recorded_source`` の値。指定時は同時に upsert する
+            commit: 自動コミットするか
         """
         self.conn.execute(
             """
@@ -1112,12 +1195,12 @@ class MemoryStore:
         """重複チャンクを削除する(同一session_id + contentの重複を除去)
 
         各(session_id, content)グループで最初のチャンクのみ残し、
-        残りを削除する。関連する chunk_vec_map, vec_chunks, chunks_fts も整合的にクリーンアップする
+        残りを ``delete_chunks_by_ids`` 経由で削除する。関連する
+        ``chunk_vec_map``, ``vec_chunks``, ``chunks_fts`` も整合的にクリーンアップされる
 
         Returns:
             削除したチャンク数
         """
-        # 重複チャンクのIDを取得 (各グループの最小IDのみ残す)
         dup_rows = self.conn.execute(
             """
             SELECT id FROM chunks
@@ -1131,42 +1214,7 @@ class MemoryStore:
             return 0
 
         dup_ids = [row[0] for row in dup_rows]
-        total = len(dup_ids)
-
-        # バッチ処理 (SQLiteパラメータ上限対策)
-        batch_size = 500
-        for start in range(0, total, batch_size):
-            batch = dup_ids[start : start + batch_size]
-            placeholders = ",".join("?" for _ in batch)
-
-            # vec_chunks バッチクリーンアップ
-            if self._use_sqlite_vec:
-                map_rows = self.conn.execute(
-                    f"SELECT rowid_int FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",  # noqa: S608
-                    batch,
-                ).fetchall()
-                if map_rows:
-                    rowid_phs = ",".join("?" for _ in map_rows)
-                    rowids = [r[0] for r in map_rows]
-                    self.conn.execute(
-                        f"DELETE FROM vec_chunks WHERE rowid IN ({rowid_phs})",  # noqa: S608
-                        rowids,
-                    )
-
-            # chunk_vec_map 削除
-            self.conn.execute(
-                f"DELETE FROM chunk_vec_map WHERE chunk_id IN ({placeholders})",  # noqa: S608
-                batch,
-            )
-
-            # chunks 削除 (FTSトリガーが chunks_fts も自動削除)
-            self.conn.execute(
-                f"DELETE FROM chunks WHERE id IN ({placeholders})",  # noqa: S608
-                batch,
-            )
-
-        self.conn.commit()
-        return total
+        return self.delete_chunks_by_ids(dup_ids)
 
     def normalize_project_names(self) -> dict[str, str]:
         """大文字小文字が異なる重複プロジェクト名を統一する

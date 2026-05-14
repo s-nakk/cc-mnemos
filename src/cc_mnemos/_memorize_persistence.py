@@ -47,14 +47,26 @@ def persist_chunks(
     store: MemoryStore,
     recorded_source: str = RECORDED_SOURCE,
 ) -> None:
-    """事前計算済みのチャンクを embedding 化して SQLite に永続化する
+    """事前計算済みのチャンクを差分更新で SQLite に永続化する
 
     ``chunk_records`` は ``{"role_user", "role_assistant", "content", "tags"}``
     を持つ辞書のリスト。``tags`` は文字列リストで、JSON 文字列としては保存しない
     生形式。本関数内で ``json.dumps`` する
 
+    Stop hook はターン毎に発火し、``chunker.chunk_transcript`` は会話全体を再パース
+    して同じ chunk を毎回返す。`chunk_id` は ``make_chunk_id(session_id, index,
+    content)`` で決定論的に決まるため、既に DB にある ID を再 embed する必要はない
+    差分更新の流れ:
+      1. 新 chunk_id 一覧を計算
+      2. DB 上の既存 chunk_id 集合を取得
+      3. ``existing - new`` を削除
+      4. ``new - existing`` の content だけ embed + insert (既存 chunk は触らない)
+
+    これにより、ターン進行に伴う 1 ジョブあたりの embed 計算量はおおむね
+    その 1 ターンで増えた新規 chunk 数 (典型的には 0〜1 件) で頭打ちになる
+
     Args:
-        session_id: セッション識別子。既存のチャンクは upsert で置き換える
+        session_id: セッション識別子
         project_name: プロジェクト名
         work_dir: 元の作業ディレクトリ
         chunk_records: 保存するチャンクのリスト
@@ -62,15 +74,33 @@ def persist_chunks(
         store: 書き込み先の MemoryStore
         recorded_source: ``session_sources.recorded_source`` に入れる値
     """
-    contents = [str(record["content"]) for record in chunk_records]
-    if not contents:
+    if not chunk_records:
         return
 
-    embeddings = embedder.encode_documents(contents)
+    new_ids: list[str] = [
+        make_chunk_id(session_id, index, str(record["content"]))
+        for index, record in enumerate(chunk_records)
+    ]
+
+    existing_ids = store.get_session_chunk_ids(session_id)
+    new_id_set = set(new_ids)
+    to_delete = list(existing_ids - new_id_set)
+    to_insert_indices = [
+        index for index, chunk_id in enumerate(new_ids) if chunk_id not in existing_ids
+    ]
+
+    contents_to_embed = [
+        str(chunk_records[index]["content"]) for index in to_insert_indices
+    ]
+    new_embeddings = (
+        embedder.encode_documents(contents_to_embed) if contents_to_embed else None
+    )
+
     now = datetime.now(tz=timezone.utc).isoformat()
 
     with store.transaction():
-        store.delete_session_chunks(session_id, commit=False)
+        if to_delete:
+            store.delete_chunks_by_ids(to_delete, commit=False)
         store.insert_session(
             session_id=session_id,
             project=project_name,
@@ -79,18 +109,29 @@ def persist_chunks(
             recorded_source=recorded_source,
             commit=False,
         )
-        for index, record in enumerate(chunk_records):
-            content_str = str(record["content"])
-            tags_raw = record.get("tags", [])
-            tags_list = list(tags_raw) if isinstance(tags_raw, list) else []
-            chunk_data: dict[str, str | int] = {
-                "id": make_chunk_id(session_id, index, content_str),
-                "session_id": session_id,
-                "role_user": str(record.get("role_user", "")),
-                "role_assistant": str(record.get("role_assistant", "")),
-                "content": content_str,
-                "tags": json.dumps(tags_list),
-                "created_at": now,
-                "token_count": len(content_str),
-            }
-            store.insert_chunk(chunk_data, embeddings[index], commit=False)
+        if new_embeddings is not None:
+            for offset, original_index in enumerate(to_insert_indices):
+                record = chunk_records[original_index]
+                content_str = str(record["content"])
+                tags_raw = record.get("tags", [])
+                tags_list = list(tags_raw) if isinstance(tags_raw, list) else []
+                chunk_data: dict[str, str | int] = {
+                    "id": new_ids[original_index],
+                    "session_id": session_id,
+                    "role_user": str(record.get("role_user", "")),
+                    "role_assistant": str(record.get("role_assistant", "")),
+                    "content": content_str,
+                    "tags": json.dumps(tags_list),
+                    "created_at": now,
+                    "token_count": len(content_str),
+                }
+                store.insert_chunk(chunk_data, new_embeddings[offset], commit=False)
+
+    skipped = len(existing_ids & new_id_set)
+    logger.debug(
+        "persist_chunks session=%s skip=%d delete=%d insert=%d",
+        session_id,
+        skipped,
+        len(to_delete),
+        len(to_insert_indices),
+    )
